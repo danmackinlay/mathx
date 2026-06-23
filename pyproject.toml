@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mathx"
+version = "0.1.0"
+description = "A maths oracle for AI agents — sample wide, vote, return JSON."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Dan MacKinlay" }]
+dependencies = [
+    "openai>=1.0",
+    "math-verify>=0.5",
+]
+
+[project.scripts]
+mathx = "mathx.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mathx"]
