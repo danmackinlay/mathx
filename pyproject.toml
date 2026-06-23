@@ -13,6 +13,7 @@ authors = [{ name = "Dan MacKinlay" }]
 dependencies = [
     "openai>=1.0",
     "math-verify>=0.5",
+    "click>=8.1",
 ]
 
 [project.scripts]
