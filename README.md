@@ -40,7 +40,7 @@ handles updates and removal.
 Run `mathx doctor` any time to check that `mathx` is on PATH and the skill is installed; it prints
 the right command if either is missing.
 
-**Other agents.** For tools whose extension model isn't a `SKILL.md` — Qwen-Agent, Open WebUI,
+**Other agents.** For tools whose extension model isn't a `SKILL.md` — Open WebUI,
 Claude Desktop — we could add an MCP server (deferred; design in
 [`MCP_PLAN.md`](MCP_PLAN.md)).
 Qwen-Agent can skip MCP and import `mathx.engine.solve` directly;
@@ -48,7 +48,9 @@ see [`examples/qwen_agent_tool.py`](examples/qwen_agent_tool.py).
 
 ## Environment variables
 
-Set them once in `.envrc`/shell-rc and the agent calls `mathx solve "…"` without requiring provider flags.
+`mathx solve` needs a provider — a model, an OpenAI-compatible endpoint, and a key. The
+`--model` / `--base-url` / `--api-key` flags default to these vars, so once they're set you call
+`mathx solve "…"` with no flags:
 
 | Var | Purpose |
 |---|---|
@@ -57,8 +59,13 @@ Set them once in `.envrc`/shell-rc and the agent calls `mathx solve "…"` witho
 | `MATHX_API_KEY` | Preferred. Set to whatever provider's key value. |
 | `OPENAI_API_KEY` | Fallback if `MATHX_API_KEY` is not set. |
 
-The repo's `.envrc` does `dotenv_if_exists`, so a `.env` file (git-ignored) is the convenient
-place for these.
+Set them however you set env vars — your shell-rc, your own project's direnv, or inline — or pass
+`--model` / `--base-url` / `--api-key` explicitly. mathx just reads the environment; it ships no
+`.env` loader of its own.
+
+The repo does include a one-line `.envrc` (`dotenv_if_exists`): if you hack on mathx from a clone
+with [direnv](https://direnv.net), it auto-loads a git-ignored `.env` so a provider key stays handy
+while you test.
 
 ## What mathx is NOT
 
@@ -68,6 +75,7 @@ place for these.
 - Not a provider registry. One OpenAI-compatible client plus flags.
 - Not an MCP server (yet).
 - Not a benchmark / audition harness.
+- Not a frontend / renderer. mathx encourages the backend to output to `$…$` / `$$…$$` so math should render but this depends on the client you are using.
 
 ## Status
 
@@ -140,7 +148,9 @@ directory (see *Install*).
 - **`votes`** — every equivalence-cluster representative with its accumulated weight (sample count
   for `cot`/`maj@k`; sum of judge confidences for `self_verify`).
 - **`samples[].confidence`** — only populated by `self_verify` (the judge's 0–1 score).
-- **`samples[].text`** — the full per-sample reasoning, kept as audit trail. Can be large.
+- **`samples[].text`** — the full per-sample reasoning, kept as audit trail. Can be large. Maths
+  in it uses `$…$` / `$$…$$` (mathx pins the model to these — `\(…\)` / `\[…\]` render as raw
+  source in clients like Goose/OpenCode/Jan); rendering it is the calling client's job.
 
 ## Strategies
 
