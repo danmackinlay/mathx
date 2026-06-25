@@ -84,6 +84,73 @@ directory (see *Install*).
 
 `tir` (tool-integrated reasoning) is deferred — see *Extending*.
 
+## Known-good models and providers
+
+The model determines how much help mathx is. Picks below are distilled from the longer reasoning
+in [*Maths and proof models, applied*](https://danmackinlay.name/notebook/automatic_maths.html)
+and the Mac-side table in
+[*Local LLMs on a Mac → models for mathematical reasoning*](https://danmackinlay.name/notebook/local_llm_mac.html#models-math)
+— this is the cookbook version: what to pass as `--model` / `--base-url` and why.
+
+### Cloud generalists (sensible starting point)
+
+Frontier reasoners increasingly out-score the narrow specialists on open maths leaderboards and
+have the big practical advantage of being rentable per token. Any of these is a reasonable default
+for `--strategy maj@k` or `self_verify`:
+
+| Model | Endpoint | Notes |
+|---|---|---|
+| DeepSeek V3.1 / R1 (`deepseek-chat`, `deepseek-reasoner`) | `https://api.deepseek.com/v1` (direct, cheap, no-train) or [OpenRouter](https://openrouter.ai) | Strong on AIME / MATH at a fraction of frontier-API prices. The pragmatic default. |
+| Qwen3-235B-A22B-Thinking | OpenRouter; [Featherless](https://featherless.ai) | MoE thinking model. Featherless caps concurrency per plan — bad for wide `--k`. |
+| Claude Opus / Sonnet (current) | Anthropic direct (Messages API; needs an OpenAI-compat shim) or OpenRouter | Top-of-leaderboard maths in mid-2026. Pricey; Anthropic's first-party API may train on prompts depending on plan — route via OpenRouter or your enterprise terms if that matters. |
+
+### Cloud specialists (when you want a narrow model)
+
+| Model | Endpoint | What for |
+|---|---|---|
+| `nvidia/OpenMath-Nemotron-{14B,32B}` | Featherless (only serverless home for the narrow solvers) | AIMO-2-winning solver family. CoT-only via mathx (TIR mode wants NeMo-Skills). |
+| `AceMath-*` | Featherless | CC-BY-NC: research/personal only. |
+| `deepseek-ai/DeepSeek-Prover-V2-671B` | [Novita](https://novita.ai) (~$0.70 / $2.50 per 1M in/out) | The big Lean prover. Not for mathx — pair with a `lean-repl` loop in [pudding](https://github.com/danmackinlay/pudding). |
+
+### Local picks (Mac, via [oMLX](https://omlx.ai) / Ollama)
+
+VibeThinker-3B running on a Mac via oMLX is the worked example that bootstrapped mathx. Three
+laptop-runnable picks, lifted from the Mac notes:
+
+| Model | Size | Sampling (server-side) | Why |
+|---|---|---|---|
+| [VibeThinker-3B](https://huggingface.co/WeiboAI/VibeThinker-3B) | ~3 GB 8-bit | temp 1.0 / top-p 0.95 / 64K+ out | Tiny solver claiming frontier-level verifiable maths at 3B (MIT licence). The starting case. |
+| [DeepSeek-R1-0528-Qwen3-8B](https://huggingface.co/deepseek-ai/DeepSeek-R1-0528-Qwen3-8B) | ~5 GB | temp 0.6 / top-p 0.95 / ≥64K out | Small-model maths generalist — AIME-2024 86%, the one to beat in the 8B class. |
+| [OpenMath-Nemotron-14B](https://huggingface.co/nvidia/OpenMath-Nemotron-14B) | ~8 GB | temp 0.6 / top-p 0.95 | Mid-size solver; ~the 32B's score at half the RAM. CoT-only via mathx. |
+
+Point mathx at the local server: `--base-url http://localhost:8000/v1 --api-key x` (the key is
+unused but mathx requires *something* in the slot). The full Mac model table — with bigger
+options like Nemotron-Cascade-2 and the agentic models for the driver — is in the
+[Mac notes](https://danmackinlay.name/notebook/local_llm_mac.html#models-math).
+
+### Greedy-only solvers don't fan out
+
+A real footgun: some solvers (Qwen2.5-Math is the documented one) want greedy decoding
+(`do_sample=False`, T=0). With T=0 every sample is identical, so `maj@k` collapses to one
+duplicated answer. Either use such a model with `--strategy cot --k 1`, or override the server's
+sampling defaults to allow non-zero T (and accept that the model wasn't trained for it).
+
+### Providers in passing
+
+| Provider | Type | Notes |
+|---|---|---|
+| localhost | self-hosted | oMLX, Ollama, vLLM, llama.cpp. Strongest privacy. Set `--base-url http://localhost:<port>/v1`. |
+| [OpenRouter](https://openrouter.ai) | aggregator | One endpoint for many models; delegates retention upstream — review the per-route policy if it matters. |
+| [DeepSeek](https://api-docs.deepseek.com/) | direct | Cheap, no-train on the platform-API plan. |
+| Featherless | serverless | No-train. Concurrency-capped per plan — fine for `cot`, bad for wide `--k`. |
+| Novita | serverless | Where DeepSeek-Prover-V2-671B is cheap. Relevant for the Lean side (not mathx). |
+
+For unpublished maths, the privacy ranking from the blog: self-hosting is strongest; the metered
+no-train shortlist (Novita, Featherless) is the next rung; first-party APIs may train on inputs
+depending on plan; OpenRouter delegates retention upstream. Pull unpublished proofs off may-train
+endpoints; route them through localhost or your own [Modal](https://modal.com)/[RunPod](https://runpod.io)
+deployment.
+
 ## Install
 
 mathx is two pieces: the `mathx` **binary** (the oracle the agent shells out to) and the
