@@ -254,8 +254,10 @@ as Cursor.
   MCP as alt, not as primary).
 - **2026-06-25** — Deleted mathx's hand-rolled `install-skill` command (and its `--target`
   matrix). The open cross-agent skills CLI (`npx skills` / [skills.sh](https://skills.sh)) already
-  discovers the repo's `.claude/skills/maths-oracle/SKILL.md` and installs it project-local or
+  discovers the repo's `skills/maths-oracle/SKILL.md` and installs it project-local or
   global (`-g`) to any of 30+ agents (`-a`), with update/remove — so maintaining our own installer
   was redundant. mathx now ships only `solve` + a print-only `doctor` (binary-on-PATH and
   skill-installed checks; never mutates files). The `~/.agents/skills/` vs per-agent-dir detail
-  above is now the skills CLI's concern, not ours.
+  above is now the skills CLI's concern, not ours. Also moved the canonical SKILL.md out of the
+  Claude-specific `.claude/skills/` to an agent-neutral top-level `skills/` (still a `npx skills`
+  discovery location); `.claude/` now holds only local dev settings.

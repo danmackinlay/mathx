@@ -109,7 +109,7 @@ def solve_cmd(
         sys.exit(1)
 
 
-# The maths-oracle SKILL.md ships in this repo at .claude/skills/; install it
+# The maths-oracle SKILL.md ships in this repo at skills/ (agent-neutral); install it
 # with the cross-agent open-skills CLI: `npx skills add danmackinlay/mathx`
 # (project-local by default, `-g` for global, `-a <agent>` to target one).
 # `mathx doctor` below diagnoses a setup but installs nothing.

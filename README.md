@@ -138,8 +138,8 @@ place for these.
 src/mathx/
   engine.py    sample, judge, cluster-and-vote, solve(); the maths logic
   cli.py       click group with `solve` + `doctor` subcommands
-.claude/skills/maths-oracle/
-  SKILL.md     agent-facing trigger phrases + dispatch recipe
+skills/maths-oracle/
+  SKILL.md     agent-facing trigger phrases + dispatch recipe (any agent via npx skills)
 ```
 
 The engine is one file by design. Public API: `from mathx import solve` returns a `Result`
