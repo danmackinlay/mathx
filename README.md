@@ -128,6 +128,10 @@ is deferred until a second frontend pulls. Until then, those agents can call `ma
 shelling out from a hand-written tool wrapper (Qwen-Agent's `register_tool`, a Custom GPT action,
 etc.) — see each agent's docs.
 
+**Qwen-Agent specifically** has the cleanest "while you wait for MCP" path because mathx is itself
+a Python library: import `mathx.engine.solve` directly inside a `BaseTool` subclass — no MCP, no
+subprocess. The drop-in pattern is [`examples/qwen_agent_tool.py`](examples/qwen_agent_tool.py).
+
 Worth knowing about the cross-tool picture: it's improving but uneven. The agentskills.io spec
 and the `~/.agents/skills/` convention are real progress towards "write a skill once, every
 agent finds it." Claude Code's holdout and a few per-agent dirs (pi, Hermes, `~/.cursor/skills/`,

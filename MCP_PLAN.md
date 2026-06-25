@@ -1,13 +1,14 @@
 # MCP server plan (deferred)
 
-mathx currently exposes itself as a CLI plus an agentskills.io SKILL.md that's installable into
-several skill-reading dirs (`~/.agents/skills/`, `~/.claude/skills/`, `~/.pi/agent/skills/`,
-`~/.hermes/skills/` — see the README's *Installing for other agents* for which clients read
-which). MCP is the portable path for clients whose extension model isn't SKILL.md at all —
-Claude Desktop, Cowork, Qwen-Agent, Open WebUI, Cursor, VS Code Copilot — plus an alternative
-path for the skill-supporting clients if the user prefers MCP semantics. This doc captures what
-to build, why, what NOT to build, and the load-bearing decisions, so a future collaborator can
-pick up the work without re-deriving the research.
+mathx currently exposes itself as a CLI plus an agentskills.io SKILL.md (installable into
+several skill-reading dirs — `~/.agents/skills/`, `~/.claude/skills/`, `~/.pi/agent/skills/`,
+`~/.hermes/skills/`; see the README's *Installing for other agents*) plus a Python library that
+programmatic harnesses can import directly — see [`examples/qwen_agent_tool.py`](examples/qwen_agent_tool.py).
+MCP is the portable path for clients whose extension model is neither SKILL.md nor a Python
+plugin system — Claude Desktop, Cowork, Open WebUI, Cursor, VS Code Copilot — plus an
+alternative path for skill-supporting clients if the user prefers MCP semantics. This doc
+captures what to build, why, what NOT to build, and the load-bearing decisions, so a future
+collaborator can pick up the work without re-deriving the research.
 
 ## Why this is deferred
 
@@ -16,8 +17,9 @@ The CLI + skill covers more clients than I originally realised — Claude Code v
 respective skill dirs. So MCP becomes the right unlock only when one of these starts happening
 for real:
 
-- A non-skill-supporting frontend pulls — Cowork, Claude Desktop, Open WebUI, Qwen-Agent, Cursor,
-  or VS Code Copilot becomes a daily-use surface.
+- A non-skill, non-direct-import frontend pulls — Cowork, Claude Desktop, Open WebUI, Cursor,
+  or VS Code Copilot becomes a daily-use surface. (Qwen-Agent dropped from this list — direct
+  Python import via `examples/qwen_agent_tool.py` covers it without MCP.)
 - Many sessions need a shared result cache — file-per-job under `--out` already gives this for
   CLI users, but only because every caller knows the convention; MCP makes the cache
   first-class.
@@ -41,7 +43,7 @@ clients that already work via skill, in case the user prefers the MCP route.
 | pi, Hermes | ✓ via skill (per-agent dirs) | also ✓ via MCP (both support `mcpServers`) |
 | Claude Desktop | ✗ | ✓ |
 | Cowork | ✗ | ✓ |
-| Qwen-Agent | ✗ (or hand-written Python wrapper) | ✓ via `mcpServers` config |
+| Qwen-Agent | ✓ via direct Python import — see [`examples/qwen_agent_tool.py`](examples/qwen_agent_tool.py) | also ✓ via `mcpServers` config |
 | Open WebUI | ✗ | ✓ (native since v0.6.31, else via [mcpo](https://github.com/open-webui/mcpo)) |
 | Cursor | partial — has its own `~/.cursor/skills/`; check current support | ✓ via MCP |
 | VS Code Copilot | ✗ | ✓ |
@@ -243,3 +245,10 @@ as Cursor.
   Cursor / VS Code Copilot, plus the "alternative path" option for skill-supporting clients).
   The decision to defer the server still holds: a second frontend hasn't pulled yet, and the
   skill route covers more of the obvious second-frontend candidates than I'd realised.
+- **2026-06-23 (further refinement)** — Qwen-Agent isn't actually MCP-only either. Its
+  extension model is programmatic Python (`register_tool` + `BaseTool`), and since mathx ships
+  as a library, the cleanest integration is direct import: `from mathx.engine import solve` from
+  inside a `BaseTool` subclass. Pattern lives at
+  [`examples/qwen_agent_tool.py`](examples/qwen_agent_tool.py). MCP's exclusive unlock narrows
+  again — now Claude Desktop / Cowork / Open WebUI / Cursor / VS Code Copilot (Qwen-Agent gets
+  MCP as alt, not as primary).
