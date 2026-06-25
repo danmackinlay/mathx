@@ -8,21 +8,6 @@ description: |
 
 Dispatch hard maths to `mathx`, an oracle that samples a problem many times against an LLM, clusters answers by maths-equivalence, and returns the modal winner with a confidence margin and a sample-by-sample audit trail. Saves you from confidently committing to a wrong answer on problems where one sample is unreliable but a vote of many is.
 
-## When to dispatch
-
-Use the oracle for:
-
-- A definite integral or sum you have not closed in two tries.
-- Modular exponentiation, big factorials, anything where small arithmetic errors compound.
-- A claim the user wants double-checked ("is 7^999 mod 1000 = 43 or 143?").
-- Anywhere a confidence margin matters more than a single answer.
-
-Do NOT use for:
-
-- Trivial arithmetic or simple algebra.
-- Anything you can solve in one careful step.
-- Tasks where the cost (~tokens + minutes) outweighs the answer's worth.
-
 ## How to dispatch
 
 `mathx solve` blocks until the fan-out finishes; for `--k` of 8 or more that can be minutes. The shape:
@@ -39,7 +24,7 @@ This skill assumes the `mathx` CLI is on PATH. If `mathx solve` reports "command
 
 Pick `<run-id>` as a short slug (e.g. the date + a 4-char nonce) so concurrent dispatches don't collide.
 
-If your harness supports background tool execution, kick the call off in the background and poll `<out>` when it appears — that frees the agent to keep doing other things while the fan-out runs and avoids tripping any tool-call timeout. In Claude Code, pass `run_in_background=true` to the Bash tool. In a synchronous-only harness, just run it and accept the wait (or raise the harness's tool-timeout if it's bounded too low).
+If your harness supports background tool execution, kick the call off in the background and poll `<out>` when it appears — that frees the agent to keep doing other things while the fan-out runs and avoids tripping any tool-call timeout. In Claude Code, pass `run_in_background=true` to the Bash tool. In a synchronous-only harness, just run it and accept the wait.
 
 Strategy guidance:
 
@@ -68,8 +53,6 @@ The JSON has:
 - **`samples[].text`** is the full per-sample reasoning. Useful when the user asks "how did it get there"; otherwise leave it in the file as an audit trail.
 - **`answer: null`** means every sample failed to produce a `\boxed{...}`. Something is wrong (bad model, bad prompt, server down). First run `mathx doctor` to rule out a broken setup, then `--strategy cot --k 1` to get one trace and diagnose.
 
-## Cost and privacy
+## Privacy
 
-- Featherless and other public endpoints are no-train. For published / non-sensitive problems they're the right default.
-- For unpublished proofs or sensitive maths, point `--base-url` at a local model (oMLX, vLLM, etc.) — no other code change.
-- Each `--k 16` run is typically a few cents on a frontier generalist via Featherless; bigger sweeps scale linearly.
+Dispatching sends the problem text to whatever endpoint mathx is configured for — often an external API. For unpublished or sensitive maths, check with the user before dispatching.
