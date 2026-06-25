@@ -112,11 +112,12 @@ this format works in:
 Re-run with `--force` to overwrite an existing install.
 
 For every other agent — **Goose**, **Qwen-Agent**, **Open WebUI**, **Claude Desktop**, **Cursor**,
-**VS Code Copilot** — the format doesn't apply; their extension model is MCP. The portable answer
-is to expose mathx as an MCP server (`submit_solve` + `check_solve` over `mathx.engine.solve`),
-which is the deferred work in *Extending* below. Until then, those agents can still call
-`mathx solve` by shelling out from a hand-written tool wrapper (Qwen-Agent's `register_tool`, a
-Goose Hint, a Custom GPT action, etc.) — see each agent's docs.
+**VS Code Copilot** — the format doesn't apply; their extension model is MCP. Building mathx as
+an MCP server is the portable answer; the design and per-client wiring snippets live in
+[`MCP_PLAN.md`](MCP_PLAN.md), but the server itself is deferred until a second frontend pulls.
+Until then, those agents can call `mathx solve` by shelling out from a hand-written tool
+wrapper (Qwen-Agent's `register_tool`, a Goose Hint, a Custom GPT action, etc.) — see each
+agent's docs.
 
 There is no cross-agent skill installer in the wild today: the per-agent extension formats
 (Markdown skill vs MCP server vs Python plugin vs Hints file) are different enough that
@@ -163,10 +164,10 @@ that wants to call mathx programmatically uses `solve(...)` directly and skips t
   code template parsing + splice-back. The calling agent already has a Python tool, so adding TIR
   here mostly matters when a specialist model that *only* talks via fenced code (e.g.
   OpenMath-Nemotron, Qwen2.5-Math) enters the rotation.
-- **An MCP server.** Also deferred. The CLI suffices because Claude Code has `run_in_background`.
-  An MCP wrapper exposing two tools (`submit_solve` returning a job id, `check_solve` polling
-  status) over `mathx.engine.solve` is ~50 lines on top, worth building when a second frontend
-  (Claude Desktop, Open WebUI, Goose) actually needs to call mathx.
+- **An MCP server.** Deferred. The portable path for everything that isn't an agentskills.io
+  client (Claude Desktop, Goose, Qwen-Agent, Open WebUI, Cursor, VS Code Copilot). Design,
+  triggers, the handle/poll vs MCP-Tasks reasoning, and per-client wiring snippets are in
+  [`MCP_PLAN.md`](MCP_PLAN.md).
 
 ## Privacy
 
