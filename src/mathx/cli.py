@@ -1,10 +1,11 @@
-"""mathx CLI: ``mathx solve …``, ``mathx install-skill``."""
+"""mathx CLI: ``mathx solve …``, ``mathx doctor``."""
 from __future__ import annotations
 
 import asyncio
 import json
 import shutil
 import sys
+import tomllib
 from pathlib import Path
 
 import click
@@ -108,93 +109,142 @@ def solve_cmd(
         sys.exit(1)
 
 
-def _skill_source() -> Path:
-    """Path to the SKILL.md dir in the source tree (dev install assumption).
+# The maths-oracle SKILL.md ships in this repo at .claude/skills/; install it
+# with the cross-agent open-skills CLI: `npx skills add danmackinlay/mathx`
+# (project-local by default, `-g` for global, `-a <agent>` to target one).
+# `mathx doctor` below diagnoses a setup but installs nothing.
 
-    ``mathx install-skill`` only works when mathx was installed in editable mode
-    (``uv tool install -e``) — the .claude/ tree must be alongside src/. Ship as
-    package data if the tool ever goes upstream.
-    """
-    return Path(__file__).resolve().parents[2] / ".claude" / "skills" / "maths-oracle"
+GIT_REPO = "git+https://github.com/danmackinlay/mathx"
 
-
-# Where each skill-reading client looks. ``agents`` is the emerging cross-tool
-# shared standard (Goose, Gemini CLI, Codex, Warp, Multica all read it); the
-# others are per-agent dirs for clients that haven't adopted it yet.
-TARGETS: dict[str, Path] = {
-    "agents": Path.home() / ".agents" / "skills" / "maths-oracle",
-    "claude": Path.home() / ".claude" / "skills" / "maths-oracle",
-    "pi":     Path.home() / ".pi" / "agent" / "skills" / "maths-oracle",
-    "hermes": Path.home() / ".hermes" / "skills" / "maths-oracle",
-}
-
-
-def _install_one(src: Path, dst: Path, *, copy: bool, force: bool) -> str:
-    """Install src -> dst. Returns a short status string for printing."""
-    if dst.exists() or dst.is_symlink():
-        if not force:
-            return f"SKIPPED {dst} (already exists; pass --force to overwrite)"
-        if dst.is_symlink() or dst.is_file():
-            dst.unlink()
-        else:
-            shutil.rmtree(dst)
-
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    if copy:
-        shutil.copytree(src, dst)
-        return f"copied   {src} -> {dst}"
-    dst.symlink_to(src, target_is_directory=True)
-    return f"linked   {src} -> {dst}"
-
-
-@cli.command(name="install-skill")
-@click.option(
-    "--target",
-    type=click.Choice([*TARGETS.keys(), "all"]),
-    default="claude",
-    show_default=True,
-    help="which agent's skills directory to install into",
+# Where the open-skills CLI drops the skill, per agent (project + home roots).
+_SKILL_SUBDIRS = (
+    ".claude/skills",
+    ".agents/skills",
+    ".agent/skills",
+    ".codex/skills",
+    ".cursor/skills",
+    ".gemini/skills",
+    ".opencode/skills",
 )
-@click.option("--copy", is_flag=True, help="copy instead of symlink")
-@click.option("--force", is_flag=True, help="overwrite if destination exists")
-def install_skill_cmd(target: str, copy: bool, force: bool) -> None:
-    """Install the maths-oracle SKILL.md into an agent's skills directory.
+_SKIP_DIRS = {".venv", "venv", ".git", "node_modules", "__pycache__",
+              "site-packages", ".tox", "dist", "build"}
 
-    All targets read the agentskills.io SKILL.md format. ``agents`` is the
-    emerging cross-tool shared location:
 
-    \b
-      agents  -> ~/.agents/skills/maths-oracle/
-                 (Goose, Gemini CLI, Codex, Warp, Multica, ...)
-      claude  -> ~/.claude/skills/maths-oracle/
-                 (Claude Code; doesn't read ~/.agents/skills/ yet, FR #66352)
-      pi      -> ~/.pi/agent/skills/maths-oracle/
-      hermes  -> ~/.hermes/skills/maths-oracle/
-      all     -> every target whose parent dir already exists
+def _find_up(start: Path, name: str) -> Path | None:
+    """Return the nearest `name` in `start` or an ancestor, else None."""
+    for d in (start, *start.parents):
+        candidate = d / name
+        if candidate.is_file():
+            return candidate
+    return None
 
-    Goose also reads ~/.claude/skills/ for backward compatibility, so
-    ``--target=claude`` also covers Goose. The ``agents`` target is the
-    forward-looking choice. For Qwen-Agent / Open WebUI / Claude Desktop, the
-    portable path is MCP (see MCP_PLAN.md), currently deferred.
-    """
-    src = _skill_source()
-    if not src.exists():
-        raise click.ClickException(
-            f"skill source not found at {src}. "
-            "Install in editable mode (`uv tool install -e ./mathx`)."
-        )
 
-    if target == "all":
-        # Only install where the agent appears to be installed (parent of skills/ exists).
-        # Avoids creating phantom config trees for clients the user doesn't have.
-        for name, dst in TARGETS.items():
-            agent_home = dst.parent.parent  # ~/.<agent>/
-            if not agent_home.exists():
-                click.echo(f"skipped  {name}: {agent_home} does not exist")
+def _dep_name(spec: str) -> str:
+    """Package name from a PEP 508 dependency spec (no regex needed)."""
+    s = spec.strip()
+    for sep in (" ", "@", "[", "<", ">", "=", "!", "~", ";", "("):
+        s = s.split(sep)[0]
+    return s.strip().lower().replace("_", "-")
+
+
+def _read_pyproject(path: Path) -> tuple[str, bool]:
+    """Return (project name, whether mathx is a declared dependency)."""
+    try:
+        data = tomllib.loads(path.read_text())
+    except (OSError, tomllib.TOMLDecodeError):
+        return "", False
+    proj = data.get("project", {})
+    name = (proj.get("name") or "").lower()
+    deps: list[str] = list(proj.get("dependencies", []))
+    for grp in proj.get("optional-dependencies", {}).values():
+        deps += grp
+    for grp in data.get("dependency-groups", {}).values():  # PEP 735
+        deps += [g for g in grp if isinstance(g, str)]
+    return name, any(_dep_name(d) == "mathx" for d in deps)
+
+
+def _project_imports_mathx(root: Path) -> bool:
+    """Best-effort: does any .py under `root` import mathx (a library use)?"""
+    try:
+        for py in root.rglob("*.py"):
+            if _SKIP_DIRS & set(py.parts):
                 continue
-            click.echo(_install_one(src, dst, copy=copy, force=force))
+            try:
+                text = py.read_text(errors="ignore")
+            except OSError:
+                continue
+            if "import mathx" in text or "from mathx" in text:
+                return True
+    except OSError:
+        return False
+    return False
+
+
+def _find_skill() -> list[Path]:
+    """Dirs where a maths-oracle SKILL.md is already installed (project + home)."""
+    found: list[Path] = []
+    for root in (Path.cwd(), Path.home()):
+        for sub in _SKILL_SUBDIRS:
+            d = root / sub / "maths-oracle"
+            if (d / "SKILL.md").exists():
+                found.append(d)
+    return found
+
+
+@cli.command(name="doctor")
+def doctor_cmd() -> None:
+    """Diagnose a mathx setup and print fixes. Changes nothing.
+
+    Checks whether the `mathx` binary is on PATH, recommends how to install it
+    for the current project (a Python project that imports mathx wants it as a
+    dependency; otherwise an isolated `uv tool install` / `uvx` is cleaner),
+    and reports whether the maths-oracle skill is installed.
+    """
+    echo = click.echo
+
+    mathx_path = shutil.which("mathx")
+    if mathx_path:
+        echo(f"✓ mathx binary on PATH: {mathx_path}")
     else:
-        click.echo(_install_one(src, TARGETS[target], copy=copy, force=force))
+        echo("✗ mathx binary: not found on PATH")
+
+    pyproject = _find_up(Path.cwd(), "pyproject.toml")
+    if pyproject is None:
+        echo("• context: no pyproject.toml found — treat as a non-Python project")
+        echo("  get the binary with (pick one):")
+        echo(f"    uv tool install {GIT_REPO}")
+        echo(f"    uvx --from {GIT_REPO} mathx solve …   # ephemeral, no install")
+    else:
+        name, has_dep = _read_pyproject(pyproject)
+        root = pyproject.parent
+        echo(f"• context: Python project '{name or root.name}' at {root}")
+        if name == "mathx":
+            echo("  this is the mathx repo itself:")
+            echo("    uv tool install -e .                 # dev binary on PATH")
+        elif has_dep:
+            echo("  mathx is already a declared dependency here. ✓")
+        elif _project_imports_mathx(root):
+            echo("  this project imports mathx as a library — add it as a dep:")
+            echo(f"    uv add {GIT_REPO}")
+        else:
+            echo("  this project would shell out to `mathx` (doesn't import it).")
+            echo("  prefer an isolated binary over polluting project deps:")
+            echo(f"    uv tool install {GIT_REPO}")
+            echo(f"    uvx --from {GIT_REPO} mathx solve …   # ephemeral")
+
+    skills = _find_skill()
+    if skills:
+        echo("✓ maths-oracle skill installed at:")
+        for s in skills:
+            echo(f"    {s}")
+    else:
+        echo("✗ maths-oracle skill: not found in this project or home dir")
+        echo("  install it with the open-skills CLI:")
+        echo("    npx skills add danmackinlay/mathx       # project-local (default)")
+        echo("    npx skills add danmackinlay/mathx -g    # global")
+
+    echo("")
+    echo("note: mathx isn't on PyPI yet, so commands resolve via the git repo.")
 
 
 def main() -> None:

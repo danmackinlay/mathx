@@ -35,6 +35,8 @@ mathx solve "<problem>" \
 
 (With `MATHX_MODEL` / `MATHX_BASE_URL` / `MATHX_API_KEY` set, no provider flags are needed. If they aren't set, ask the user.)
 
+This skill assumes the `mathx` binary is on PATH. If `mathx solve` reports "command not found" — or any call errors before sampling — run `mathx doctor`: it checks the setup and prints the exact install command (`uv tool install …` / `uvx`).
+
 Pick `<run-id>` as a short slug (e.g. the date + a 4-char nonce) so concurrent dispatches don't collide.
 
 If your harness supports background tool execution, kick the call off in the background and poll `<out>` when it appears — that frees the agent to keep doing other things while the fan-out runs and avoids tripping any tool-call timeout. In Claude Code, pass `run_in_background=true` to the Bash tool. In a synchronous-only harness, just run it and accept the wait (or raise the harness's tool-timeout if it's bounded too low).
@@ -64,7 +66,7 @@ The JSON has:
   - **8–11 / 16** — soft majority; mention the disagreement in your reply rather than asserting.
   - **≤ 7/16 or a 6/5/5 split** — escalate `--k` (try 32 or 64) or surface the disagreement to the user. Don't just commit to the modal answer.
 - **`samples[].text`** is the full per-sample reasoning. Useful when the user asks "how did it get there"; otherwise leave it in the file as an audit trail.
-- **`answer: null`** means every sample failed to produce a `\boxed{...}`. Something is wrong (bad model, bad prompt, server down). Try `--strategy cot --k 1` to get one trace and diagnose.
+- **`answer: null`** means every sample failed to produce a `\boxed{...}`. Something is wrong (bad model, bad prompt, server down). First run `mathx doctor` to rule out a broken setup, then `--strategy cot --k 1` to get one trace and diagnose.
 
 ## Cost and privacy
 

@@ -31,7 +31,8 @@ If the agent's harness supports background tool execution (Claude Code's `run_in
 dispatch in the background and poll the `--out` file when the fan-out finishes — no MCP server,
 no daemon, no queue. In a synchronous-only harness, the call just blocks; raise the harness's
 tool-timeout if needed. The shipped `SKILL.md` teaches the agent when to dispatch and how to
-interpret the margin; `mathx install-skill` wires it into the agent's skills directory.
+interpret the margin; `npx skills add danmackinlay/mathx` wires it into the agent's skills
+directory (see *Install*).
 
 ## Output shape
 
@@ -85,58 +86,36 @@ interpret the margin; `mathx install-skill` wires it into the agent's skills dir
 
 ## Install
 
+mathx is two pieces: the `mathx` **binary** (the oracle the agent shells out to) and the
+**`SKILL.md`** that teaches the agent when to call it.
+
+**Binary** — put `mathx` on PATH:
+
 ```bash
-git clone <this repo> ~/Source/mathx      # somewhere stable, since install-skill symlinks from it
-cd ~/Source/mathx
-uv tool install -e .                      # puts `mathx` on PATH
-mathx install-skill                       # default --target=claude: ~/.claude/skills/maths-oracle/
+uv tool install git+https://github.com/danmackinlay/mathx   # isolated, global
+# …or, from a clone you want to hack on:
+git clone https://github.com/danmackinlay/mathx && cd mathx && uv tool install -e .
 ```
 
-Editable install is required: `mathx install-skill` resolves the SKILL.md source through
-`__file__` and so needs the repo at a stable path. Pass `--copy` to copy instead of symlink,
-`--force` to overwrite an existing install.
+(mathx isn't on PyPI yet, so installs resolve via the git repo, not a bare `mathx` name.)
 
-## Installing for other agents
+**Skill** — install it with the open cross-agent skills CLI ([skills.sh](https://skills.sh)):
 
-The SKILL.md format mathx ships ([agentskills.io](https://agentskills.io)) has adoption across a
-growing set of clients. `~/.agents/skills/` is the emerging cross-tool shared location
-([Goose calls it "the recommended standard"](https://goose-docs.ai/docs/guides/context-engineering/using-skills);
-[Warp marks it "(recommended)"](https://docs.warp.dev/agent-platform/capabilities/skills/);
-Codex, Gemini CLI, Multica all read it). Claude Code is still the holdout
-([feature request #66352](https://github.com/anthropics/claude-code/issues/66352) tracks adding it).
-pi and Hermes keep their own per-agent dirs.
+```bash
+npx skills add danmackinlay/mathx                  # project-local (default)
+npx skills add danmackinlay/mathx -g               # global, all your projects
+npx skills add danmackinlay/mathx -a claude-code   # target a specific agent
+```
 
-`install-skill --target=` writes the skill into the chosen location:
+`npx skills` discovers the bundled `SKILL.md`, installs it for any of 30+ coding agents, and
+handles updates and removal — so mathx carries no per-agent install matrix of its own. Run
+`mathx doctor` any time to check that the binary is on PATH and the skill is installed; it prints
+the right command if either is missing.
 
-| `--target` | Wires into | Clients that read it |
-|---|---|---|
-| `agents` | `~/.agents/skills/maths-oracle/` | Goose, Codex, Gemini CLI, Warp, Multica, others on the shared standard |
-| `claude` (default) | `~/.claude/skills/maths-oracle/` | Claude Code (also a backward-compat path for Goose) |
-| `pi` | `~/.pi/agent/skills/maths-oracle/` | [pi](https://github.com/earendil-works/pi) |
-| `hermes` | `~/.hermes/skills/maths-oracle/` | [Hermes Agent](https://github.com/nousresearch/hermes-agent) |
-| `all` | every target whose parent dir already exists | (silently skips clients you don't have) |
-
-Re-run with `--force` to overwrite an existing install. The default stays `claude` because that's
-the daily-driver target — for forward-looking cross-tool reach, pass `--target=agents`, or use
-`--target=all` to symlink into every location at once. (Goose specifically also reads
-`~/.claude/skills/` for backward compatibility, so `--target=claude` also covers it.)
-
-For agents whose extension model isn't a SKILL.md at all — **Qwen-Agent**, **Open WebUI**,
-**Claude Desktop**, **Cursor**, **VS Code Copilot** — the portable path is an MCP server. The
-design and per-client wiring snippets live in [`MCP_PLAN.md`](MCP_PLAN.md), but the server itself
-is deferred until a second frontend pulls. Until then, those agents can call `mathx solve` by
-shelling out from a hand-written tool wrapper (Qwen-Agent's `register_tool`, a Custom GPT action,
-etc.) — see each agent's docs.
-
-**Qwen-Agent specifically** has the cleanest "while you wait for MCP" path because mathx is itself
-a Python library: import `mathx.engine.solve` directly inside a `BaseTool` subclass — no MCP, no
-subprocess. The drop-in pattern is [`examples/qwen_agent_tool.py`](examples/qwen_agent_tool.py).
-
-Worth knowing about the cross-tool picture: it's improving but uneven. The agentskills.io spec
-and the `~/.agents/skills/` convention are real progress towards "write a skill once, every
-agent finds it." Claude Code's holdout and a few per-agent dirs (pi, Hermes, `~/.cursor/skills/`,
-`~/.gemini/config/skills/`) mean a symlink-per-target installer is still useful in mid-2026, but
-the long arc is consolidation onto the shared directory.
+**Other agents.** For tools whose extension model isn't a `SKILL.md` — Qwen-Agent, Open WebUI,
+Claude Desktop — the portable path is an MCP server (deferred; design in
+[`MCP_PLAN.md`](MCP_PLAN.md)). Qwen-Agent can skip MCP and import `mathx.engine.solve` directly;
+see [`examples/qwen_agent_tool.py`](examples/qwen_agent_tool.py).
 
 ## Environment variables
 
@@ -158,7 +137,7 @@ place for these.
 ```
 src/mathx/
   engine.py    sample, judge, cluster-and-vote, solve(); the maths logic
-  cli.py       click group with `solve` + `install-skill` subcommands
+  cli.py       click group with `solve` + `doctor` subcommands
 .claude/skills/maths-oracle/
   SKILL.md     agent-facing trigger phrases + dispatch recipe
 ```
