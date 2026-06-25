@@ -1,76 +1,174 @@
 # mathx
 
-A maths oracle for AI agents. Sample wide, vote by maths-equivalence, return JSON.
+A minimal mathematical oracle for AI agents. CLI dispatch, JSON return, optional voting.
 
-Companion / minimum-viable rewrite of the oracle architecture from
-[*Maths and proof models, applied*](https://danmackinlay.name/notebook/automatic_maths.html).
-Where [pudding](https://github.com/danmackinlay/pudding) became a maths workbench (audition harness,
-shim, providers registry, marimo studio), `mathx` is the one thing an agent needs: a CLI it can
-dispatch and a JSON file it can read.
+We point any OpenAI-compatible chat endpoint at a maths problem, sample it `k` times, cluster the
+answers by [math-verify](https://pypi.org/project/math-verify/) equivalence (so `\frac{1}{2}` votes
+together with `0.5`), and write the modal cluster — with a confidence margin and a per-sample audit
+trail — to a JSON file the calling agent reads. Voting is optional: `--strategy cot` is one sample
+at temperature 0.
+
+The companion blog notebook is
+[*Maths and proof models, applied*](https://danmackinlay.name/notebook/automatic_maths.html);
+the broader, older workbench mathx carves out of is
+[`pudding`](https://github.com/danmackinlay/pudding).
 
 ## How an agent uses it
+
+A typical call:
 
 ```bash
 mathx solve "What is 7^999 mod 1000?" \
   --strategy maj@k --k 16 \
-  --model deepseek-ai/DeepSeek-V3 \
-  --base-url https://api.featherless.ai/v1 \
   --out /tmp/mathx/sweep-0001.json
 ```
 
-Stdout: human-readable summary (answer, margin, token use). `--out`: full JSON with the answer, the
-vote split, and the per-sample audit trail.
+`--model`, `--base-url`, and `--api-key` are required but read from env vars by default (see
+*Environment variables*). Stdout is a one-screen summary (answer, margin, vote split, token use);
+`--out` writes the structured JSON the calling agent parses.
 
-In Claude Code, dispatch via Bash with `run_in_background=true`; the file appears when the fan-out
-finishes, even if it overruns the synchronous tool timeout. Background Bash is the handle/poll. No
-MCP server, no daemon, no queue.
+In Claude Code the recommended dispatch is `Bash(…, run_in_background=true)`, polling the `--out`
+file when the fan-out finishes. Background Bash is the handle/poll mechanism — no MCP server, no
+daemon, no queue. The shipped `SKILL.md` teaches Claude when to dispatch and how to interpret the
+margin; `mathx install-skill` symlinks it into `~/.claude/skills/`.
+
+## Output shape
+
+`--out` writes JSON of this shape:
+
+```json
+{
+  "answer": "143",
+  "margin": "14/16",
+  "votes": {"143": 14.0, "43": 2.0},
+  "strategy": "maj@k",
+  "model": "deepseek-ai/DeepSeek-V3",
+  "base_url": "https://api.featherless.ai/v1",
+  "k": 16,
+  "tokens_in_total": 4096,
+  "tokens_out_total": 25184,
+  "elapsed_ms_total": 47210,
+  "samples": [
+    {
+      "boxed": "143",
+      "confidence": null,
+      "error": null,
+      "tokens_in": 256,
+      "tokens_out": 1574,
+      "elapsed_ms": 4218,
+      "text": "…full reasoning, with any leading <think>…</think> already stripped…"
+    }
+  ]
+}
+```
+
+- **`answer`** — the boxed string of the winning equivalence cluster, or `null` if no sample
+  produced a `\boxed{…}`.
+- **`margin`** — `<top_cluster_size>/<n_voters>`. The skill teaches the agent to treat
+  `≥ 12/16` as commit-worthy, `8–11/16` as a soft majority worth surfacing, `≤ 7/16` as escalate
+  or punt.
+- **`votes`** — every equivalence-cluster representative with its accumulated weight (sample count
+  for `cot`/`maj@k`; sum of judge confidences for `self_verify`).
+- **`samples[].confidence`** — only populated by `self_verify` (the judge's 0–1 score).
+- **`samples[].text`** — the full per-sample reasoning, kept as audit trail. Can be large.
 
 ## Strategies
 
 | Strategy | What it does | When |
 |---|---|---|
-| `cot` | One sample, `T=0` | Quick sanity check. |
-| `maj@k` (default) | `k` samples at `T=0.7`, modal equivalence-class winner. | Default — buys real accuracy. |
-| `self_verify` | `maj@k` plus a per-sample judge pass that scores 0–1; votes are weighted by judge confidence. | When you suspect the modal answer is plausibly wrong (slower). |
+| `cot` | One sample at `T=0`. | Quick sanity check; no voting. |
+| `maj@k` (default) | `k` samples at `T=0.7`, modal equivalence-class winner. | Default; improves accuracy over a single shot. |
+| `self_verify` | `maj@k` plus a per-sample judge pass scoring 0–1; votes are weighted by judge confidence. | When the modal answer is plausibly wrong. Slower; ~2× tokens. |
 
-Vote clustering uses [`math-verify`](https://pypi.org/project/math-verify/), so `\frac{1}{2}` and
-`0.5` are voted together.
+`tir` (tool-integrated reasoning) is deferred — see *Extending*.
 
 ## Install
 
 ```bash
-git clone <this repo>            # somewhere stable (~/Source/mathx)
-cd mathx
-uv tool install -e .             # installs `mathx` on PATH
-mathx install-skill              # symlinks SKILL.md into ~/.claude/skills/maths-oracle/
+git clone <this repo> ~/Source/mathx      # somewhere stable, since install-skill symlinks from it
+cd ~/Source/mathx
+uv tool install -e .                      # puts `mathx` on PATH
+mathx install-skill                       # symlinks SKILL.md into ~/.claude/skills/maths-oracle/
 ```
 
-The install-skill step is what makes Claude Code (or any tool that scans `~/.claude/skills/`) load
-the skill and know when to dispatch. Pass `--copy` to copy instead of symlink, `--force` to
-overwrite an existing install.
+Editable install is required: `mathx install-skill` resolves the SKILL.md source through
+`__file__` and so needs the repo at a stable path. Pass `--copy` to copy instead of symlink,
+`--force` to overwrite an existing install.
 
-## Configuration
+## Environment variables
 
-mathx is endpoint-agnostic — pass `--model` and `--base-url` per call. For convenience:
+Click reads these as first-class defaults — set them once in `.envrc`/shell-rc and the agent calls
+`mathx solve "…"` with no provider flags.
 
-- The API key comes from the env var named by `--api-key-env` (default `OPENAI_API_KEY`), or pass
-  `--api-key`.
-- `.envrc` loads `.env` via `direnv` if present — drop `FEATHERLESS_API_KEY=…` (or whatever) there.
-- The skill suggests `MATHX_MODEL` and `MATHX_BASE_URL` as shell-side defaults that the agent reads.
+| Var | Purpose |
+|---|---|
+| `MATHX_MODEL` | Model name, e.g. `deepseek-ai/DeepSeek-V3`. |
+| `MATHX_BASE_URL` | OpenAI-compatible endpoint, e.g. `https://api.featherless.ai/v1`. |
+| `MATHX_API_KEY` | Preferred. Set to whatever provider's key value. |
+| `OPENAI_API_KEY` | Fallback if `MATHX_API_KEY` is not set. |
+
+The repo's `.envrc` does `dotenv_if_exists`, so a `.env` file (git-ignored) is the convenient
+place for these.
+
+## Code layout
+
+```
+src/mathx/
+  engine.py    sample, judge, cluster-and-vote, solve(); the maths logic
+  cli.py       click group with `solve` + `install-skill` subcommands
+.claude/skills/maths-oracle/
+  SKILL.md     agent-facing trigger phrases + dispatch recipe
+```
+
+The engine is one file by design. Public API: `from mathx import solve` returns a `Result`
+dataclass; `mathx.engine.result_to_dict` is the JSON serialiser used by the CLI. Anything Python
+that wants to call mathx programmatically uses `solve(...)` directly and skips the CLI / file dance.
+
+## Extending
+
+- **A new strategy.** Add a branch to `solve()`'s strategy dispatch in `engine.py` and a
+  `STRATEGIES` entry in `cli.py`. If the strategy changes how votes accumulate (like
+  `self_verify`'s confidence-weighting), the hook is `_cluster_and_vote()` reading
+  `Sample.confidence`.
+- **A new endpoint.** No code change — pass `--base-url` and `--model`, or set the env vars.
+- **TIR (tool-integrated reasoning).** Currently deferred. Would require a Python kernel + fenced-
+  code template parsing + splice-back. The calling agent already has a Python tool, so adding TIR
+  here mostly matters when a specialist model that *only* talks via fenced code (e.g.
+  OpenMath-Nemotron, Qwen2.5-Math) enters the rotation.
+- **An MCP server.** Also deferred. The CLI suffices because Claude Code has `run_in_background`.
+  An MCP wrapper exposing two tools (`submit_solve` returning a job id, `check_solve` polling
+  status) over `mathx.engine.solve` is ~50 lines on top, worth building when a second frontend
+  (Claude Desktop, Open WebUI, Goose) actually needs to call mathx.
 
 ## Privacy
 
-mathx itself sends prompts to whatever endpoint you point it at. Featherless is no-train. For
-sensitive / unpublished work, set `--base-url` to a local oMLX or vLLM endpoint — no other code
-change.
+mathx sends prompts to whatever `--base-url` points at. For unpublished or sensitive work, point it
+at a local oMLX or vLLM endpoint — no other change.
 
 ## What mathx is NOT
 
-- Not a Lean prover. Provers are a separate problem; see [pudding](https://github.com/danmackinlay/pudding).
-- Not a TIR (tool-integrated-reasoning) sandbox. The calling agent already has a Python tool.
-- Not a provider registry — one OpenAI-compatible client + flags is enough.
-- Not an MCP server (yet). The CLI works because Claude Code has `run_in_background`. Promote to MCP
-  when a second frontend (Claude Desktop, Open WebUI, Goose) actually matters.
+- Not a Lean prover. See [pudding](https://github.com/danmackinlay/pudding) for the gated
+  Lean-prover surface.
+- Not a TIR sandbox. The calling agent has its own Python.
+- Not a provider registry. One OpenAI-compatible client plus flags.
+- Not an MCP server (yet). See *Extending*.
+- Not a benchmark / audition harness. That's a different workflow; pudding's `eval.py` is one
+  example.
+
+## Status
+
+Early. Wired end-to-end (engine, CLI, skill, install). Offline smoke tests confirm boxed extraction
+and math-verify clustering (`1/2 ≡ 0.5` votes together). **No live API smoke test has been run
+yet.** The suggested first check:
+
+```bash
+mathx solve "7^999 mod 1000" --strategy maj@k --k 16
+```
+
+against a competent generalist endpoint should return `143` with a wide margin. (The
+specialist `Qwen2.5-Math-72B` returns `43` unanimously — the won't-trust-the-tool failure
+documented in pudding's README — which is the case mathx routes around by pointing at a
+generalist.)
 
 ## Licence
 
