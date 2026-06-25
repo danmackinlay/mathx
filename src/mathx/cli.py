@@ -34,7 +34,7 @@ def cli() -> None:
     "--model",
     required=True,
     envvar="MATHX_MODEL",
-    help='e.g. "deepseek-ai/DeepSeek-V3"; or set $MATHX_MODEL',
+    help='e.g. "deepseek/deepseek-v4-pro"; or set $MATHX_MODEL',
 )
 @click.option(
     "--base-url",

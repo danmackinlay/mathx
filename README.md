@@ -44,8 +44,8 @@ directory (see *Install*).
   "margin": "14/16",
   "votes": {"143": 14.0, "43": 2.0},
   "strategy": "maj@k",
-  "model": "deepseek-ai/DeepSeek-V3",
-  "base_url": "https://api.featherless.ai/v1",
+  "model": "deepseek/deepseek-v4-pro",
+  "base_url": "https://openrouter.ai/api/v1",
   "k": 16,
   "tokens_in_total": 4096,
   "tokens_out_total": 25184,
@@ -100,7 +100,7 @@ for `--strategy maj@k` or `self_verify`:
 
 | Model | Endpoint | Notes |
 |---|---|---|
-| DeepSeek V3.1 / R1 (`deepseek-chat`, `deepseek-reasoner`) | `https://api.deepseek.com/v1` (direct, cheap, no-train) or [OpenRouter](https://openrouter.ai) | Strong on AIME / MATH at a fraction of frontier-API prices. The pragmatic default. |
+| DeepSeek V4 Pro / Flash (`deepseek/deepseek-v4-pro`, `deepseek/deepseek-v4-flash` on OpenRouter; `deepseek-reasoner`/`deepseek-chat` on the direct API) | `https://api.deepseek.com/v1` (direct, cheap, no-train) or [OpenRouter](https://openrouter.ai) | Pro is the reasoning/maths flagship, Flash is the fast/cheap tier. The pragmatic default — strong on AIME / MATH at a fraction of frontier-API prices. |
 | Qwen3-235B-A22B-Thinking | OpenRouter; [Featherless](https://featherless.ai) | MoE thinking model. Featherless caps concurrency per plan — bad for wide `--k`. |
 | Claude Opus / Sonnet (current) | Anthropic direct (Messages API; needs an OpenAI-compat shim) or OpenRouter | Top-of-leaderboard maths in mid-2026. Pricey; Anthropic's first-party API may train on prompts depending on plan — route via OpenRouter or your enterprise terms if that matters. |
 
@@ -191,7 +191,7 @@ Click reads these as first-class defaults — set them once in `.envrc`/shell-rc
 
 | Var | Purpose |
 |---|---|
-| `MATHX_MODEL` | Model name, e.g. `deepseek-ai/DeepSeek-V3`. |
+| `MATHX_MODEL` | Model name, e.g. `deepseek/deepseek-v4-pro`. |
 | `MATHX_BASE_URL` | OpenAI-compatible endpoint, e.g. `https://api.featherless.ai/v1`. |
 | `MATHX_API_KEY` | Preferred. Set to whatever provider's key value. |
 | `OPENAI_API_KEY` | Fallback if `MATHX_API_KEY` is not set. |
