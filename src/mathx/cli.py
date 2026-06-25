@@ -118,11 +118,57 @@ def _skill_source() -> Path:
     return Path(__file__).resolve().parents[2] / ".claude" / "skills" / "maths-oracle"
 
 
+# Where each agentskills.io-compatible client looks for skills. Hardcoded; the
+# small set is stable and the README documents the assumption.
+TARGETS: dict[str, Path] = {
+    "claude": Path.home() / ".claude" / "skills" / "maths-oracle",
+    "pi":     Path.home() / ".pi" / "agent" / "skills" / "maths-oracle",
+    "hermes": Path.home() / ".hermes" / "skills" / "maths-oracle",
+}
+
+
+def _install_one(src: Path, dst: Path, *, copy: bool, force: bool) -> str:
+    """Install src -> dst. Returns a short status string for printing."""
+    if dst.exists() or dst.is_symlink():
+        if not force:
+            return f"SKIPPED {dst} (already exists; pass --force to overwrite)"
+        if dst.is_symlink() or dst.is_file():
+            dst.unlink()
+        else:
+            shutil.rmtree(dst)
+
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if copy:
+        shutil.copytree(src, dst)
+        return f"copied   {src} -> {dst}"
+    dst.symlink_to(src, target_is_directory=True)
+    return f"linked   {src} -> {dst}"
+
+
 @cli.command(name="install-skill")
+@click.option(
+    "--target",
+    type=click.Choice([*TARGETS.keys(), "all"]),
+    default="claude",
+    show_default=True,
+    help="which agent's skills directory to install into",
+)
 @click.option("--copy", is_flag=True, help="copy instead of symlink")
 @click.option("--force", is_flag=True, help="overwrite if destination exists")
-def install_skill_cmd(copy: bool, force: bool) -> None:
-    """Install the maths-oracle SKILL.md into ~/.claude/skills/."""
+def install_skill_cmd(target: str, copy: bool, force: bool) -> None:
+    """Install the maths-oracle SKILL.md into an agent's skills directory.
+
+    Supported agents (all read the agentskills.io SKILL.md format):
+
+    \b
+      claude  -> ~/.claude/skills/maths-oracle/
+      pi      -> ~/.pi/agent/skills/maths-oracle/
+      hermes  -> ~/.hermes/skills/maths-oracle/
+      all     -> install to every target whose parent dir exists
+
+    For other agents (Goose, Qwen-Agent, Open WebUI, Claude Desktop), the
+    portable path is an MCP server, currently deferred.
+    """
     src = _skill_source()
     if not src.exists():
         raise click.ClickException(
@@ -130,26 +176,17 @@ def install_skill_cmd(copy: bool, force: bool) -> None:
             "Install in editable mode (`uv tool install -e ./mathx`)."
         )
 
-    dst_parent = Path.home() / ".claude" / "skills"
-    dst_parent.mkdir(parents=True, exist_ok=True)
-    dst = dst_parent / "maths-oracle"
-
-    if dst.exists() or dst.is_symlink():
-        if not force:
-            raise click.ClickException(
-                f"{dst} already exists — pass --force to overwrite"
-            )
-        if dst.is_symlink() or dst.is_file():
-            dst.unlink()
-        else:
-            shutil.rmtree(dst)
-
-    if copy:
-        shutil.copytree(src, dst)
-        click.echo(f"copied {src} -> {dst}")
+    if target == "all":
+        # Only install where the agent appears to be installed (parent of skills/ exists).
+        # Avoids creating phantom config trees for clients the user doesn't have.
+        for name, dst in TARGETS.items():
+            agent_home = dst.parent.parent  # ~/.<agent>/
+            if not agent_home.exists():
+                click.echo(f"skipped  {name}: {agent_home} does not exist")
+                continue
+            click.echo(_install_one(src, dst, copy=copy, force=force))
     else:
-        dst.symlink_to(src, target_is_directory=True)
-        click.echo(f"symlinked {dst} -> {src}")
+        click.echo(_install_one(src, TARGETS[target], copy=copy, force=force))
 
 
 def main() -> None:

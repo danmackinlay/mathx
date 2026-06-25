@@ -27,10 +27,11 @@ mathx solve "What is 7^999 mod 1000?" \
 *Environment variables*). Stdout is a one-screen summary (answer, margin, vote split, token use);
 `--out` writes the structured JSON the calling agent parses.
 
-In Claude Code the recommended dispatch is `Bash(…, run_in_background=true)`, polling the `--out`
-file when the fan-out finishes. Background Bash is the handle/poll mechanism — no MCP server, no
-daemon, no queue. The shipped `SKILL.md` teaches Claude when to dispatch and how to interpret the
-margin; `mathx install-skill` symlinks it into `~/.claude/skills/`.
+If the agent's harness supports background tool execution (Claude Code's `run_in_background=true`),
+dispatch in the background and poll the `--out` file when the fan-out finishes — no MCP server,
+no daemon, no queue. In a synchronous-only harness, the call just blocks; raise the harness's
+tool-timeout if needed. The shipped `SKILL.md` teaches the agent when to dispatch and how to
+interpret the margin; `mathx install-skill` wires it into the agent's skills directory.
 
 ## Output shape
 
@@ -88,12 +89,39 @@ margin; `mathx install-skill` symlinks it into `~/.claude/skills/`.
 git clone <this repo> ~/Source/mathx      # somewhere stable, since install-skill symlinks from it
 cd ~/Source/mathx
 uv tool install -e .                      # puts `mathx` on PATH
-mathx install-skill                       # symlinks SKILL.md into ~/.claude/skills/maths-oracle/
+mathx install-skill                       # default --target=claude: ~/.claude/skills/maths-oracle/
 ```
 
 Editable install is required: `mathx install-skill` resolves the SKILL.md source through
 `__file__` and so needs the repo at a stable path. Pass `--copy` to copy instead of symlink,
 `--force` to overwrite an existing install.
+
+## Installing for other agents
+
+The SKILL.md format mathx ships ([agentskills.io](https://agentskills.io)) is read by a small set
+of clients today. Each looks in a different directory; `install-skill --target=` covers the three
+this format works in:
+
+| `--target` | Wires into | Reads the SKILL.md? |
+|---|---|---|
+| `claude` (default) | `~/.claude/skills/maths-oracle/` | ✓ Claude Code |
+| `pi` | `~/.pi/agent/skills/maths-oracle/` | ✓ [pi](https://github.com/earendil-works/pi) |
+| `hermes` | `~/.hermes/skills/maths-oracle/` | ✓ [Hermes Agent](https://github.com/nousresearch/hermes-agent) |
+| `all` | every target whose parent dir already exists | (skips silently for clients you don't have) |
+
+Re-run with `--force` to overwrite an existing install.
+
+For every other agent — **Goose**, **Qwen-Agent**, **Open WebUI**, **Claude Desktop**, **Cursor**,
+**VS Code Copilot** — the format doesn't apply; their extension model is MCP. The portable answer
+is to expose mathx as an MCP server (`submit_solve` + `check_solve` over `mathx.engine.solve`),
+which is the deferred work in *Extending* below. Until then, those agents can still call
+`mathx solve` by shelling out from a hand-written tool wrapper (Qwen-Agent's `register_tool`, a
+Goose Hint, a Custom GPT action, etc.) — see each agent's docs.
+
+There is no cross-agent skill installer in the wild today: the per-agent extension formats
+(Markdown skill vs MCP server vs Python plugin vs Hints file) are different enough that
+"generic installer" reduces to "N adapters, one per agent." MCP is the closest thing to generic
+*because it's a protocol, not a format*.
 
 ## Environment variables
 

@@ -1,7 +1,7 @@
 ---
 name: maths-oracle
 description: |
-  Dispatch a hard maths sub-problem to the `mathx` oracle — sample-many, vote, return a checked answer — instead of attempting it yourself. Use whenever the user (or a tool in your loop) needs: a closed-form integral or symbolic computation you have stalled on twice; a modular-exponentiation or large-modulus arithmetic result you would otherwise guess; an olympiad-flavoured inequality, divisibility, or combinatorial-counting answer; verification of a maths claim ("is this calculation right?", "double-check this sum"); a confidence margin on an answer where you already have a guess but want a vote. Also use when the user asks to "fan out", "sample several attempts", "consult the oracle", "ask the maths solver", or mentions `mathx`, maj@k, or "voted answer". Do NOT use for trivial arithmetic, simple algebra, plotting, dataframe wrangling, or anything you can solve in one careful step yourself — the oracle costs tokens and minutes; reach for it only when your own attempt has plausibly failed.
+  Dispatch a hard maths sub-problem to the `mathx` oracle — sample-many, vote, return a checked answer — instead of attempting it yourself. Use whenever the user (or a tool in your loop) needs: a closed-form integral or symbolic computation you have stalled on twice; a modular-exponentiation or large-modulus arithmetic result you would otherwise guess; an olympiad-flavoured inequality, divisibility, or combinatorial-counting answer; verification of a maths claim ("is this calculation right?", "double-check this sum"); a confidence margin on an answer where you already have a guess but want a vote. Also use when the user asks to "fan out", "sample several attempts", "consult the oracle", "ask the maths solver", or mentions `mathx`, maj@k, or "voted answer". Do NOT use for trivial arithmetic, simple algebra, plotting, dataframe wrangling, or anything you can solve in one careful step yourself — the oracle costs tokens and minutes; use it only when your own attempt has plausibly failed.
 ---
 
 # Maths oracle
@@ -25,20 +25,25 @@ Do NOT use for:
 
 ## How to dispatch
 
-`mathx solve` blocks until the fan-out finishes; for `--k` of 8 or more that can be minutes. Use Bash's `run_in_background=true` and read the result file when you're ready:
+`mathx solve` blocks until the fan-out finishes; for `--k` of 8 or more that can be minutes. The shape:
 
 ```bash
 mathx solve "<problem>" \
   --strategy maj@k --k 16 \
-  --model "$MATHX_MODEL" --base-url "$MATHX_BASE_URL" \
   --out /tmp/mathx/<run-id>.json
 ```
 
-- Pick `<run-id>` as a short slug (e.g. the date + a 4-char nonce) so concurrent dispatches don't collide.
-- `--strategy maj@k` is the default and the right choice almost always. Use `--strategy self_verify` if you want each sample weighted by a judge pass (slower; rescues problems where the modal answer is plausibly wrong). Use `--strategy cot --k 1` only for a quick sanity check.
-- Background Bash is the handle/poll mechanism: the call returns immediately with a shell id; check `/tmp/mathx/<run-id>.json` periodically (every 30–60 s for `--k 16`, less often for larger sweeps); the JSON appears when done.
+(With `MATHX_MODEL` / `MATHX_BASE_URL` / `MATHX_API_KEY` set, no provider flags are needed. If they aren't set, ask the user.)
 
-If `MATHX_MODEL` / `MATHX_BASE_URL` aren't set in the user's shell, ask the user or pick a sensible default from `~/.config/mathx/` if present.
+Pick `<run-id>` as a short slug (e.g. the date + a 4-char nonce) so concurrent dispatches don't collide.
+
+If your harness supports background tool execution, kick the call off in the background and poll `<out>` when it appears — that frees the agent to keep doing other things while the fan-out runs and avoids tripping any tool-call timeout. In Claude Code, pass `run_in_background=true` to the Bash tool. In a synchronous-only harness, just run it and accept the wait (or raise the harness's tool-timeout if it's bounded too low).
+
+Strategy guidance:
+
+- `--strategy maj@k` (default) is the right choice almost always.
+- `--strategy self_verify` if you want each sample weighted by a judge pass — slower, but rescues problems where the modal answer is plausibly wrong.
+- `--strategy cot --k 1` only for a quick sanity check.
 
 ## How to interpret the result
 
@@ -57,7 +62,7 @@ The JSON has:
 - **`margin`** is the confidence signal. `14/16` means 14 of 16 voters agreed (after maths-equivalence clustering). Treat it like:
   - **≥ 12/16** — trust the answer; commit.
   - **8–11 / 16** — soft majority; mention the disagreement in your reply rather than asserting.
-  - **≤ 7/16 or a 6/5/5 split** — escalate `--k` (try 32 or 64) or surface the disagreement to the user. Don't quietly commit.
+  - **≤ 7/16 or a 6/5/5 split** — escalate `--k` (try 32 or 64) or surface the disagreement to the user. Don't just commit to the modal answer.
 - **`samples[].text`** is the full per-sample reasoning. Useful when the user asks "how did it get there"; otherwise leave it in the file as an audit trail.
 - **`answer: null`** means every sample failed to produce a `\boxed{...}`. Something is wrong (bad model, bad prompt, server down). Try `--strategy cot --k 1` to get one trace and diagnose.
 
