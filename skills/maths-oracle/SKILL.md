@@ -35,7 +35,7 @@ mathx solve "<problem>" \
 
 (With `MATHX_MODEL` / `MATHX_BASE_URL` / `MATHX_API_KEY` set, no provider flags are needed. If they aren't set, ask the user.)
 
-This skill assumes the `mathx` binary is on PATH. If `mathx solve` reports "command not found" — or any call errors before sampling — run `mathx doctor`: it checks the setup and prints the exact install command (`uv tool install …` / `uvx`).
+This skill assumes the `mathx` CLI is on PATH. If `mathx solve` reports "command not found" — or any call errors before sampling — run `mathx doctor`: it checks the setup and prints the exact install command (`uv tool install …` / `uvx`).
 
 Pick `<run-id>` as a short slug (e.g. the date + a 4-char nonce) so concurrent dispatches don't collide.
 

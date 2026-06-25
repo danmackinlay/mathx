@@ -195,7 +195,7 @@ def _find_skill() -> list[Path]:
 def doctor_cmd() -> None:
     """Diagnose a mathx setup and print fixes. Changes nothing.
 
-    Checks whether the `mathx` binary is on PATH, recommends how to install it
+    Checks whether `mathx` is on PATH, recommends how to install it
     for the current project (a Python project that imports mathx wants it as a
     dependency; otherwise an isolated `uv tool install` / `uvx` is cleaner),
     and reports whether the maths-oracle skill is installed.
@@ -204,14 +204,14 @@ def doctor_cmd() -> None:
 
     mathx_path = shutil.which("mathx")
     if mathx_path:
-        echo(f"✓ mathx binary on PATH: {mathx_path}")
+        echo(f"✓ mathx on PATH: {mathx_path}")
     else:
-        echo("✗ mathx binary: not found on PATH")
+        echo("✗ mathx: not found on PATH")
 
     pyproject = _find_up(Path.cwd(), "pyproject.toml")
     if pyproject is None:
         echo("• context: no pyproject.toml found — treat as a non-Python project")
-        echo("  get the binary with (pick one):")
+        echo("  install mathx with (pick one):")
         echo(f"    uv tool install {GIT_REPO}")
         echo(f"    uvx --from {GIT_REPO} mathx solve …   # ephemeral, no install")
     else:
@@ -220,7 +220,7 @@ def doctor_cmd() -> None:
         echo(f"• context: Python project '{name or root.name}' at {root}")
         if name == "mathx":
             echo("  this is the mathx repo itself:")
-            echo("    uv tool install -e .                 # dev binary on PATH")
+            echo("    uv tool install -e .                 # dev install on PATH")
         elif has_dep:
             echo("  mathx is already a declared dependency here. ✓")
         elif _project_imports_mathx(root):
@@ -228,7 +228,7 @@ def doctor_cmd() -> None:
             echo(f"    uv add {GIT_REPO}")
         else:
             echo("  this project would shell out to `mathx` (doesn't import it).")
-            echo("  prefer an isolated binary over polluting project deps:")
+            echo("  prefer an isolated install over polluting project deps:")
             echo(f"    uv tool install {GIT_REPO}")
             echo(f"    uvx --from {GIT_REPO} mathx solve …   # ephemeral")
 

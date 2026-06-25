@@ -14,10 +14,10 @@ In fact, this is the second such project; there is an older bloatier project cal
 
 ## Install
 
-mathx is two pieces: the `mathx` **binary** (the oracle the agent shells out to) and the
+mathx is two pieces: the `mathx` **CLI** (the oracle the agent shells out to) and the
 **`SKILL.md`** that teaches the agent when to call it.
 
-**Binary** — put `mathx` on PATH:
+**CLI** — put `mathx` on PATH:
 
 ```bash
 uv tool install git+https://github.com/danmackinlay/mathx   # isolated, global
@@ -37,7 +37,7 @@ npx skills add danmackinlay/mathx -a claude-code   # target a specific agent
 
 `npx skills` discovers the bundled `SKILL.md`, installs it for any of 30+ coding agents, and
 handles updates and removal.
-Run `mathx doctor` any time to check that the binary is on PATH and the skill is installed; it prints
+Run `mathx doctor` any time to check that `mathx` is on PATH and the skill is installed; it prints
 the right command if either is missing.
 
 **Other agents.** For tools whose extension model isn't a `SKILL.md` — Qwen-Agent, Open WebUI,
