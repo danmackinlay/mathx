@@ -98,31 +98,41 @@ Editable install is required: `mathx install-skill` resolves the SKILL.md source
 
 ## Installing for other agents
 
-The SKILL.md format mathx ships ([agentskills.io](https://agentskills.io)) is read by a small set
-of clients today. Each looks in a different directory; `install-skill --target=` covers the three
-this format works in:
+The SKILL.md format mathx ships ([agentskills.io](https://agentskills.io)) has adoption across a
+growing set of clients. `~/.agents/skills/` is the emerging cross-tool shared location
+([Goose calls it "the recommended standard"](https://goose-docs.ai/docs/guides/context-engineering/using-skills);
+[Warp marks it "(recommended)"](https://docs.warp.dev/agent-platform/capabilities/skills/);
+Codex, Gemini CLI, Multica all read it). Claude Code is still the holdout
+([feature request #66352](https://github.com/anthropics/claude-code/issues/66352) tracks adding it).
+pi and Hermes keep their own per-agent dirs.
 
-| `--target` | Wires into | Reads the SKILL.md? |
+`install-skill --target=` writes the skill into the chosen location:
+
+| `--target` | Wires into | Clients that read it |
 |---|---|---|
-| `claude` (default) | `~/.claude/skills/maths-oracle/` | ✓ Claude Code |
-| `pi` | `~/.pi/agent/skills/maths-oracle/` | ✓ [pi](https://github.com/earendil-works/pi) |
-| `hermes` | `~/.hermes/skills/maths-oracle/` | ✓ [Hermes Agent](https://github.com/nousresearch/hermes-agent) |
-| `all` | every target whose parent dir already exists | (skips silently for clients you don't have) |
+| `agents` | `~/.agents/skills/maths-oracle/` | Goose, Codex, Gemini CLI, Warp, Multica, others on the shared standard |
+| `claude` (default) | `~/.claude/skills/maths-oracle/` | Claude Code (also a backward-compat path for Goose) |
+| `pi` | `~/.pi/agent/skills/maths-oracle/` | [pi](https://github.com/earendil-works/pi) |
+| `hermes` | `~/.hermes/skills/maths-oracle/` | [Hermes Agent](https://github.com/nousresearch/hermes-agent) |
+| `all` | every target whose parent dir already exists | (silently skips clients you don't have) |
 
-Re-run with `--force` to overwrite an existing install.
+Re-run with `--force` to overwrite an existing install. The default stays `claude` because that's
+the daily-driver target — for forward-looking cross-tool reach, pass `--target=agents`, or use
+`--target=all` to symlink into every location at once. (Goose specifically also reads
+`~/.claude/skills/` for backward compatibility, so `--target=claude` also covers it.)
 
-For every other agent — **Goose**, **Qwen-Agent**, **Open WebUI**, **Claude Desktop**, **Cursor**,
-**VS Code Copilot** — the format doesn't apply; their extension model is MCP. Building mathx as
-an MCP server is the portable answer; the design and per-client wiring snippets live in
-[`MCP_PLAN.md`](MCP_PLAN.md), but the server itself is deferred until a second frontend pulls.
-Until then, those agents can call `mathx solve` by shelling out from a hand-written tool
-wrapper (Qwen-Agent's `register_tool`, a Goose Hint, a Custom GPT action, etc.) — see each
-agent's docs.
+For agents whose extension model isn't a SKILL.md at all — **Qwen-Agent**, **Open WebUI**,
+**Claude Desktop**, **Cursor**, **VS Code Copilot** — the portable path is an MCP server. The
+design and per-client wiring snippets live in [`MCP_PLAN.md`](MCP_PLAN.md), but the server itself
+is deferred until a second frontend pulls. Until then, those agents can call `mathx solve` by
+shelling out from a hand-written tool wrapper (Qwen-Agent's `register_tool`, a Custom GPT action,
+etc.) — see each agent's docs.
 
-There is no cross-agent skill installer in the wild today: the per-agent extension formats
-(Markdown skill vs MCP server vs Python plugin vs Hints file) are different enough that
-"generic installer" reduces to "N adapters, one per agent." MCP is the closest thing to generic
-*because it's a protocol, not a format*.
+Worth knowing about the cross-tool picture: it's improving but uneven. The agentskills.io spec
+and the `~/.agents/skills/` convention are real progress towards "write a skill once, every
+agent finds it." Claude Code's holdout and a few per-agent dirs (pi, Hermes, `~/.cursor/skills/`,
+`~/.gemini/config/skills/`) mean a symlink-per-target installer is still useful in mid-2026, but
+the long arc is consolidation onto the shared directory.
 
 ## Environment variables
 

@@ -1,38 +1,50 @@
 # MCP server plan (deferred)
 
-mathx currently exposes itself as a CLI plus an agentskills.io SKILL.md that Claude Code, pi, and
-Hermes auto-discover. The portable extension path for every other MCP-capable agent — Claude
-Desktop, Goose, Qwen-Agent, Open WebUI, Cursor, VS Code Copilot — is to also expose mathx as an
-MCP server. This doc captures what to build, why, what NOT to build, and the load-bearing
-decisions, so a future collaborator can pick up the work without re-deriving the research.
+mathx currently exposes itself as a CLI plus an agentskills.io SKILL.md that's installable into
+several skill-reading dirs (`~/.agents/skills/`, `~/.claude/skills/`, `~/.pi/agent/skills/`,
+`~/.hermes/skills/` — see the README's *Installing for other agents* for which clients read
+which). MCP is the portable path for clients whose extension model isn't SKILL.md at all —
+Claude Desktop, Cowork, Qwen-Agent, Open WebUI, Cursor, VS Code Copilot — plus an alternative
+path for the skill-supporting clients if the user prefers MCP semantics. This doc captures what
+to build, why, what NOT to build, and the load-bearing decisions, so a future collaborator can
+pick up the work without re-deriving the research.
 
 ## Why this is deferred
 
-The CLI + skill is enough for Claude Code today, and Claude Code is the daily driver. MCP becomes
-the right unlock when one of these starts happening for real:
+The CLI + skill covers more clients than I originally realised — Claude Code via
+`~/.claude/skills/`, plus Goose / Codex / Gemini CLI / Warp / Multica / pi / Hermes via their
+respective skill dirs. So MCP becomes the right unlock only when one of these starts happening
+for real:
 
-- A second frontend pulls — Cowork, Open WebUI, Goose, Qwen-Agent shows up in regular use.
+- A non-skill-supporting frontend pulls — Cowork, Claude Desktop, Open WebUI, Qwen-Agent, Cursor,
+  or VS Code Copilot becomes a daily-use surface.
 - Many sessions need a shared result cache — file-per-job under `--out` already gives this for
-  Claude Code, but only because every caller knows the convention; MCP makes the cache
+  CLI users, but only because every caller knows the convention; MCP makes the cache
   first-class.
-- A non-bash agent (Claude Desktop, Qwen-Agent, Goose) needs to call mathx and shelling out
-  isn't acceptable for that client.
+- A skill-supporting client needs to call mathx without shelling out (e.g. Goose's policy or a
+  Qwen-Agent-style programmatic harness where subprocess is awkward).
 
 Until one of those fires, MCP is a yet-another-server-to-run for no real gain.
 
 ## What MCP unlocks
 
+The agentskills.io SKILL.md format covers more clients than I originally thought (the shared
+`~/.agents/skills/` standard plus a few per-agent dirs; see the README's *Installing for other
+agents*). What MCP adds is the rest of the universe — and an alternative path for several
+clients that already work via skill, in case the user prefers the MCP route.
+
 | Client | Without MCP | With MCP |
 |---|---|---|
-| Claude Code | ✓ via skill + background Bash | also ✓ via MCP (alternative path; either works) |
+| Claude Code | ✓ via skill (`~/.claude/skills/`) + background Bash | also ✓ via MCP (alternative; either works) |
+| Goose | ✓ via skill (`~/.agents/skills/` preferred, `~/.claude/skills/` back-compat) | also ✓ via MCP |
+| Codex, Gemini CLI, Warp, Multica | ✓ via skill (`~/.agents/skills/`) | also ✓ via MCP |
+| pi, Hermes | ✓ via skill (per-agent dirs) | also ✓ via MCP (both support `mcpServers`) |
 | Claude Desktop | ✗ | ✓ |
 | Cowork | ✗ | ✓ |
-| Goose | ✗ | ✓ (Goose's whole extension model is MCP) |
 | Qwen-Agent | ✗ (or hand-written Python wrapper) | ✓ via `mcpServers` config |
 | Open WebUI | ✗ | ✓ (native since v0.6.31, else via [mcpo](https://github.com/open-webui/mcpo)) |
-| Cursor | ✗ | ✓ |
+| Cursor | partial — has its own `~/.cursor/skills/`; check current support | ✓ via MCP |
 | VS Code Copilot | ✗ | ✓ |
-| pi, Hermes | ✓ via skill | also ✓ via MCP if user prefers (both support `mcpServers`) |
 
 ## Why handle/poll, not MCP Tasks
 
@@ -218,3 +230,16 @@ as Cursor.
   beyond agentskills.io's three adopters; everything else is MCP. The async fact-check confirmed
   MCP Tasks is one of four async routes, not the only one — handle/poll is the right primary.
   MCP work itself is deferred until a second frontend pulls.
+- **2026-06-23 (correction)** — Earlier "agentskills.io has only three adopters" framing was
+  wrong. The actual landscape: **`~/.agents/skills/` is the emerging cross-tool shared standard**
+  ([Goose](https://goose-docs.ai/docs/guides/context-engineering/using-skills),
+  [Warp](https://docs.warp.dev/agent-platform/capabilities/skills/),
+  [Codex](https://developers.openai.com/codex/skills), Gemini CLI, Multica all read it);
+  Claude Code is the holdout
+  ([anthropics/claude-code#66352](https://github.com/anthropics/claude-code/issues/66352));
+  Goose ALSO discovers `~/.claude/skills/` for backward compat — so `mathx install-skill
+  --target=claude` was already silently covering Goose users. Added `--target=agents` for the
+  shared dir; MCP's unlock is now narrower (Claude Desktop / Cowork / Qwen-Agent / Open WebUI /
+  Cursor / VS Code Copilot, plus the "alternative path" option for skill-supporting clients).
+  The decision to defer the server still holds: a second frontend hasn't pulled yet, and the
+  skill route covers more of the obvious second-frontend candidates than I'd realised.

@@ -118,9 +118,11 @@ def _skill_source() -> Path:
     return Path(__file__).resolve().parents[2] / ".claude" / "skills" / "maths-oracle"
 
 
-# Where each agentskills.io-compatible client looks for skills. Hardcoded; the
-# small set is stable and the README documents the assumption.
+# Where each skill-reading client looks. ``agents`` is the emerging cross-tool
+# shared standard (Goose, Gemini CLI, Codex, Warp, Multica all read it); the
+# others are per-agent dirs for clients that haven't adopted it yet.
 TARGETS: dict[str, Path] = {
+    "agents": Path.home() / ".agents" / "skills" / "maths-oracle",
     "claude": Path.home() / ".claude" / "skills" / "maths-oracle",
     "pi":     Path.home() / ".pi" / "agent" / "skills" / "maths-oracle",
     "hermes": Path.home() / ".hermes" / "skills" / "maths-oracle",
@@ -158,16 +160,22 @@ def _install_one(src: Path, dst: Path, *, copy: bool, force: bool) -> str:
 def install_skill_cmd(target: str, copy: bool, force: bool) -> None:
     """Install the maths-oracle SKILL.md into an agent's skills directory.
 
-    Supported agents (all read the agentskills.io SKILL.md format):
+    All targets read the agentskills.io SKILL.md format. ``agents`` is the
+    emerging cross-tool shared location:
 
     \b
+      agents  -> ~/.agents/skills/maths-oracle/
+                 (Goose, Gemini CLI, Codex, Warp, Multica, ...)
       claude  -> ~/.claude/skills/maths-oracle/
+                 (Claude Code; doesn't read ~/.agents/skills/ yet, FR #66352)
       pi      -> ~/.pi/agent/skills/maths-oracle/
       hermes  -> ~/.hermes/skills/maths-oracle/
-      all     -> install to every target whose parent dir exists
+      all     -> every target whose parent dir already exists
 
-    For other agents (Goose, Qwen-Agent, Open WebUI, Claude Desktop), the
-    portable path is an MCP server, currently deferred.
+    Goose also reads ~/.claude/skills/ for backward compatibility, so
+    ``--target=claude`` also covers Goose. The ``agents`` target is the
+    forward-looking choice. For Qwen-Agent / Open WebUI / Claude Desktop, the
+    portable path is MCP (see MCP_PLAN.md), currently deferred.
     """
     src = _skill_source()
     if not src.exists():
