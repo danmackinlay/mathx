@@ -9,11 +9,14 @@ via atomic tmp-file-then-rename.
 Record shape:
 
     {"job_id": "20260703T021530Z-a3f2", "status": "running",
-     "started_at": ISO8601, "args": {problem, strategy, k, model, base_url,
-                                     temperature, max_tokens, max_k}}
+     "started_at": ISO8601, "kind": "solve" | "check", "args": {...}}
 
-then, when finished, the same plus ``finished_at`` and either ``result`` (the
-exact ``result_to_dict`` shape ``mathx solve --out`` writes) or ``error``.
+``args`` is kind-specific: solve jobs carry {problem, strategy, k, model,
+base_url, temperature, max_tokens, max_k}; check jobs carry {claim, tir_k,
+grade_k, exec_timeout_s, model, base_url, temperature, max_tokens}. Records
+predating ``kind`` are treated as solve. When finished, the record gains
+``finished_at`` and either ``result`` (exactly what ``--out`` writes for that
+kind) or ``error``.
 
 The API key is NEVER written to disk: the worker resolves it from its
 environment (``MATHX_API_KEY``/``OPENAI_API_KEY``) at run time; ``spawn_worker``
@@ -35,6 +38,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from mathx.check import check_result_to_dict
+from mathx.check import check as run_check
 from mathx.engine import result_to_dict, solve
 
 
@@ -66,19 +71,11 @@ def new_job_id() -> str:
     return time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + secrets.token_hex(2)
 
 
-def submit(
-    problem: str,
-    *,
-    strategy: str = "maj@k",
-    k: int = 16,
-    model: str,
-    base_url: str,
-    temperature: float | None = None,
-    max_tokens: int = 16000,
-    max_k: int | None = None,
-) -> dict:
+def submit(*, kind: str = "solve", args: dict) -> dict:
     """Write a fresh "running" record and return it. Does NOT start the worker —
     the caller decides how (``spawn_worker`` for fire-and-forget, ``run_job`` inline)."""
+    if kind not in ("solve", "check"):
+        raise ValueError(f"unknown job kind: {kind!r}")
     job_id = new_job_id()
     while _job_path(job_id).exists():
         job_id = new_job_id()
@@ -86,16 +83,8 @@ def submit(
         "job_id": job_id,
         "status": "running",
         "started_at": _now(),
-        "args": {
-            "problem": problem,
-            "strategy": strategy,
-            "k": k,
-            "model": model,
-            "base_url": base_url,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "max_k": max_k,
-        },
+        "kind": kind,
+        "args": args,
     }
     _write_atomic(_job_path(job_id), record)
     return record
@@ -163,25 +152,44 @@ def prune(*, hours: float) -> int:
 
 async def run_job(job_id: str) -> dict:
     """Execute a submitted job and finalize its record. The worker body."""
-    args = read(job_id)["args"]
+    record = read(job_id)
+    kind = record.get("kind", "solve")  # pre-Stage-3 records carry no kind
+    args = record["args"]
     api_key = os.environ.get("MATHX_API_KEY") or os.environ.get("OPENAI_API_KEY")
     if not api_key:
         return fail(job_id, error="no API key in environment: set MATHX_API_KEY (or OPENAI_API_KEY)")
     try:
-        result = await solve(
-            args["problem"],
-            model=args["model"],
-            base_url=args["base_url"],
-            api_key=api_key,
-            k=args["k"],
-            strategy=args["strategy"],
-            temperature=args["temperature"],
-            max_tokens=args["max_tokens"],
-            max_k=args["max_k"],
-        )
+        if kind == "check":
+            result = await run_check(
+                args["claim"],
+                model=args["model"],
+                base_url=args["base_url"],
+                api_key=api_key,
+                tir_k=args.get("tir_k", 1),
+                grade_k=args.get("grade_k", 8),
+                temperature=args.get("temperature"),
+                max_tokens=args.get("max_tokens", 16000),
+                exec_timeout_s=args.get("exec_timeout_s", 60.0),
+            )
+            payload = check_result_to_dict(result)
+        elif kind == "solve":
+            result = await solve(
+                args["problem"],
+                model=args["model"],
+                base_url=args["base_url"],
+                api_key=api_key,
+                k=args["k"],
+                strategy=args["strategy"],
+                temperature=args["temperature"],
+                max_tokens=args["max_tokens"],
+                max_k=args["max_k"],
+            )
+            payload = result_to_dict(result)
+        else:
+            return fail(job_id, error=f"unknown job kind: {kind!r}")
     except Exception as e:
         return fail(job_id, error=f"{type(e).__name__}: {e}")
-    return finalize(job_id, result=result_to_dict(result))
+    return finalize(job_id, result=payload)
 
 
 def spawn_worker(job_id: str, *, api_key: str | None = None) -> None:

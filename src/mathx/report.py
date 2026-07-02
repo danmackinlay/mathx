@@ -137,3 +137,65 @@ def render_sample(run: dict, index: int) -> str:
     if s.get("error"):
         head += f"\nerror: {s['error']}"
     return f"{head}\n\n{s.get('text') or '(no text)'}"
+
+
+EVIDENCE_NOTE = (
+    "verdicts are evidence, not proof: a passing script checked instances/symbolics, "
+    "a grade is a vote"
+)
+
+
+def render_check_report(run: dict) -> str:
+    """One-screen report for a `mathx check` record."""
+    lines: list[str] = []
+    if run.get("claim"):
+        lines.append(f"claim: {_one_line(run['claim'], 100)}")
+    lines.append(f"status: {run.get('summary') or run.get('status')}")
+    lines.append(
+        f"model: {run.get('model')}   tir_k: {run.get('tir_k')}   grade_k: {run.get('grade_k')}"
+    )
+    lines.append(
+        f"tokens: in={run.get('tokens_in_total', 0)} out={run.get('tokens_out_total', 0)}   "
+        f"elapsed: {run.get('elapsed_ms_total', 0)} ms"
+    )
+
+    tir_runs: list[dict] = run.get("tir") or []
+    if tir_runs:
+        lines.append("")
+        lines.append("tir scripts (`--script N` prints the code and its output):")
+        for i, r in enumerate(tir_runs):
+            note = f" — {_one_line(r['note'], 70)}" if r.get("note") else ""
+            timing = "timed out" if r.get("timed_out") else f"{r.get('exec_elapsed_ms', 0)} ms"
+            lines.append(f"  {i:>3}  {r.get('verdict', '?'):<12}  {timing:>9}{note}")
+
+    grade: dict | None = run.get("grade")
+    if grade:
+        lines.append("")
+        lines.append(
+            f"grade: {grade.get('verdict')} {grade.get('margin')} — "
+            f"{grade.get('true', 0)} true / {grade.get('false', 0)} false / "
+            f"{grade.get('abstain', 0)} abstain "
+            "(`--sample N` prints a grader's reasoning)"
+        )
+
+    lines.append("")
+    lines.append(EVIDENCE_NOTE)
+    return "\n".join(lines)
+
+
+def render_check_script(run: dict, index: int) -> str:
+    """Checker script *index*: its code, then what it printed."""
+    tir_runs: list[dict] = run.get("tir") or []
+    if not 0 <= index < len(tir_runs):
+        raise IndexError(f"script index {index} out of range (run has {len(tir_runs)} scripts)")
+    r = tir_runs[index]
+    head = f"script {index}: verdict={r.get('verdict')}"
+    if r.get("note"):
+        head += f"   note: {r['note']}"
+    head += f"\nexit={r.get('exit_code')}   timed_out={r.get('timed_out')}   {r.get('exec_elapsed_ms', 0)} ms"
+    parts = [head, "", "--- code ---", r.get("code") or "(no code extracted)"]
+    if r.get("stdout"):
+        parts += ["", "--- stdout ---", r["stdout"].rstrip()]
+    if r.get("stderr"):
+        parts += ["", "--- stderr ---", r["stderr"].rstrip()]
+    return "\n".join(parts)

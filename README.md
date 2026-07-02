@@ -59,6 +59,7 @@ see [`examples/qwen_agent_tool.py`](examples/qwen_agent_tool.py).
 | `MATHX_BASE_URL` | OpenAI-compatible endpoint, e.g. `https://api.featherless.ai/v1`. |
 | `MATHX_API_KEY` | Set to whatever provider's key value. (Falls back to `OPENAI_API_KEY`) |
 | `MATHX_JOBS_DIR` | Optional. Where background job records live; defaults to `$XDG_CACHE_HOME/mathx/jobs`, else `~/.cache/mathx/jobs`. |
+| `MATHX_EXECUTOR` | Optional. Where `mathx check` runs checker scripts. Only `local` (the default) exists today. |
 
 Set them however you set env vars, or pass
 `--model` / `--base-url` / `--api-key` explicitly.
@@ -71,7 +72,11 @@ while you test.
 
 - Not a Lean prover. See [pudding](https://github.com/danmackinlay/pudding) for the gated
   Lean-prover surface.
-- Not a TIR sandbox. The calling agent has its own Python.
+- Not a *solver-side* TIR sandbox: `mathx solve` never executes solver code — the calling agent
+  has its own Python. (`mathx check` *does* execute model-written **checker** scripts, in a
+  hygiene-sandboxed local subprocess — timeout, fresh cwd, capped output. That is deliberately
+  not called a security boundary; see [CHECK_PLAN.md](CHECK_PLAN.md) for the honest framing and
+  the planned remote-isolation backends.)
 - Not a provider registry. One OpenAI-compatible client plus flags.
 - Not a benchmark / audition harness.
 - Not a frontend / renderer. mathx encourages the backend to output to `$…$` / `$$…$$` so math should render but this depends on the client you are using.
@@ -127,6 +132,32 @@ worker that outlives the CLI call; the record flips to `complete`/`error` when t
 lands. Runs get identity and history: every surface — `status`, `jobs`, `show`, the MCP
 server's `check_solve` — is just a reader of the same files. The API key is never written to
 disk; workers read it from the environment.
+
+## Checking claims
+
+`mathx check` is the claim-level primitive (design: [CHECK_PLAN.md](CHECK_PLAN.md)) — verdict
+plus evidence, never proof:
+
+```bash
+mathx check "for integer n >= 1, the sum of the first n odd numbers is n^2"
+mathx submit --check "<claim>"       # same thing, in the background via the job store
+```
+
+Two verdict lanes run concurrently:
+
+- **tir** (`--tir-k`, default 1): a model writes one self-contained verification script
+  (sympy symbolic checks plus seeded random-instance testing); mathx executes it in a local
+  subprocess (`--exec-timeout`, default 60 s) and parses a structured
+  `VERDICT: PASS/FAIL/INCONCLUSIVE` from stdout, with any `COUNTEREXAMPLE:`/`REASON:` line
+  surfaced.
+- **grade** (`--grade-k`, default 8): k independent samples vote `\boxed{TRUE}` /
+  `\boxed{FALSE}` on the claim; majority plus margin.
+
+The overall status is `supported` / `refuted` / `conflict` / `unclear` (exit codes 0 / 1 / 2 /
+2), and the full audit trail — generated code, its stdout/stderr, every grader's reasoning —
+lands in the JSON record. `mathx show <run>` renders it; `--script N` prints a checker
+script and its output, `--sample N` a grader's reasoning. `MATHX_EXECUTOR` picks where
+checker scripts run (only `local` today; remote sandbox backends are planned).
 The shipped `SKILL.md` teaches the agent when to dispatch and how to
 interpret the margin; `npx skills add danmackinlay/mathx` wires it into the agent's skills
 directory (see *Install*).
@@ -192,15 +223,17 @@ directory (see *Install*).
 ```
 src/mathx/
   engine.py       sample, judge, cluster-and-vote, solve(); the maths logic
+  check.py        claim checking: tir script lane + grade vote lane (`mathx check`)
+  executor.py     where checker code runs: local subprocess today, remote seam for later
   report.py       pure renderers over the run JSON (`mathx show`)
   jobs.py         file-per-job store + detached worker (`python -m mathx.jobs <id>`)
   mcp_server.py   FastMCP wrapper: submit_solve / check_solve over the job store
-  cli.py          click group: solve, submit, status, jobs, show, doctor, mcp-serve
+  cli.py          click group: solve, check, submit, status, jobs, show, doctor, mcp-serve
 skills/maths-oracle/
   SKILL.md     agent-facing trigger phrases + dispatch recipe (any agent via npx skills)
 tests/
   conftest.py  fake OpenAI-compatible endpoint (httpx MockTransport under the real client)
-  test_*.py    engine, jobs, report, MCP, CLI — `uv run pytest`, no network needed
+  test_*.py    engine, check, executor, jobs, report, MCP, CLI — `uv run pytest`, offline
 ```
 
 The engine is one file by design. Public API: `from mathx import solve` returns a `Result`

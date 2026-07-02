@@ -26,6 +26,17 @@ This skill assumes the `mathx` CLI is on PATH. If any call reports "command not 
 
 `mathx solve "<problem>" --strategy maj@k --k 16 --out /tmp/mathx/<run-id>.json` is the blocking form — same engine, waits for the vote, writes the same JSON. Use it only for small `--k` or when you'd rather block than poll (e.g. your harness backgrounds the call itself).
 
+## Checking a claim instead of solving a problem
+
+When the user asks "is this right?" / "double-check this" — a CLAIM to verify, not a problem to solve — use `check` rather than `solve`:
+
+```bash
+mathx check "<claim>"                  # blocking; exit 0 supported / 1 refuted / 2 conflict-or-unclear
+mathx submit --check "<claim>"        # background via the job store, same polling as above
+```
+
+Two lanes run: a model-written sympy verification script that mathx executes (`tir`), and a TRUE/FALSE vote of k samples (`grade`). Report the status honestly — it is evidence, not proof: `supported` means the script's checks passed and/or the vote went TRUE, never "proven". On `conflict`, show the user both sides (`mathx show <run> --script 0` prints the checker script and its output).
+
 Strategy guidance:
 
 - `--strategy maj@k` (default) is the right choice almost always.

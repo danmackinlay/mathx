@@ -143,3 +143,11 @@ process identity between `run()` calls outside a `Session`.
   chat endpoint. (2) Execution goes behind an Executor seam from day one; local subprocess
   default (hygiene, stated honestly); E2B/Daytona/Modal as deferred optional backends —
   remote is the security/parallelism upgrade, not a day-one dependency.
+- **2026-07-03 (built)** — Shipped as designed: `check.py` (lane 1 tir + grade, concurrent,
+  `--tir-k`/`--grade-k`, structured VERDICT parsing), `executor.py` (`ExecResult`,
+  `LocalExecutor`, `get_executor` honouring `$MATHX_EXECUTOR`), job-store integration
+  (`kind: solve|check` on records; `mathx submit --check`), `show` renders verdict records.
+  README's "Not a TIR sandbox" line rewritten as planned. Deferred, in order of likely pull:
+  lane 2 (literal multi-turn TIR driver + `Executor.session()`), remote executor backends,
+  an MCP `submit_check` tool (Stage-5 face work), and the consistency lane as a first-class
+  `check` flag (it's just `mathx solve` on the restated claim; call it manually meanwhile).

@@ -11,12 +11,37 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from mathx import jobs
-
-SUBMIT_ARGS = dict(model="test-model", base_url="http://fake.test/v1")
+from mathx.check import CHECKER_SYSTEM, GRADER_SYSTEM
 
 
 def submit(problem: str = "1+1?", **overrides) -> dict:
-    return jobs.submit(problem, **{**SUBMIT_ARGS, **overrides})
+    args = {
+        "problem": problem,
+        "strategy": "maj@k",
+        "k": 16,
+        "model": "test-model",
+        "base_url": "http://fake.test/v1",
+        "temperature": None,
+        "max_tokens": 16000,
+        "max_k": None,
+        **overrides,
+    }
+    return jobs.submit(kind="solve", args=args)
+
+
+def submit_check(claim: str = "2+2=4", **overrides) -> dict:
+    args = {
+        "claim": claim,
+        "tir_k": 1,
+        "grade_k": 2,
+        "exec_timeout_s": 30.0,
+        "model": "test-model",
+        "base_url": "http://fake.test/v1",
+        "temperature": None,
+        "max_tokens": 16000,
+        **overrides,
+    }
+    return jobs.submit(kind="check", args=args)
 
 
 class TestStore:
@@ -26,11 +51,16 @@ class TestStore:
     def test_submit_writes_running_record(self, isolated_jobs_dir):
         record = submit(k=4, strategy="maj@k", max_k=8)
         assert record["status"] == "running"
+        assert record["kind"] == "solve"
         assert record["args"]["problem"] == "1+1?"
         assert record["args"]["k"] == 4
         assert record["args"]["max_k"] == 8
         on_disk = json.loads((isolated_jobs_dir / f"{record['job_id']}.json").read_text())
         assert on_disk == record
+
+    def test_submit_unknown_kind_rejected(self):
+        with pytest.raises(ValueError, match="unknown job kind"):
+            jobs.submit(kind="prove", args={})
 
     def test_no_secret_ever_touches_disk(self, isolated_jobs_dir, monkeypatch):
         monkeypatch.setenv("MATHX_API_KEY", "sk-hunter2")
@@ -119,6 +149,29 @@ class TestRunJob:
         done = asyncio.run(jobs.run_job(record["job_id"]))
         assert done["status"] == "error"
         assert "ValueError" in done["error"]
+
+    def test_check_kind_dispatches_to_checker(self, fake_endpoint, monkeypatch):
+        monkeypatch.setenv("MATHX_API_KEY", "test-key")
+        fake_endpoint(by_system={
+            CHECKER_SYSTEM: '```python\nprint("VERDICT: PASS")\n```',
+            GRADER_SYSTEM: r"\boxed{TRUE}",
+        })
+        record = submit_check()
+        done = asyncio.run(jobs.run_job(record["job_id"]))
+        assert done["status"] == "complete"
+        assert done["result"]["kind"] == "check"
+        assert done["result"]["status"] == "supported"
+        assert done["result"]["tir"][0]["verdict"] == "pass"
+
+    def test_legacy_record_without_kind_still_solves(self, fake_endpoint, monkeypatch, isolated_jobs_dir):
+        monkeypatch.setenv("MATHX_API_KEY", "test-key")
+        fake_endpoint([r"\boxed{2}"])
+        record = submit(strategy="cot", k=1)
+        del record["kind"]  # simulate a pre-Stage-3 record
+        (isolated_jobs_dir / f"{record['job_id']}.json").write_text(json.dumps(record))
+        done = asyncio.run(jobs.run_job(record["job_id"]))
+        assert done["status"] == "complete"
+        assert done["result"]["answer"] == "2"
 
     def test_worker_subprocess_entry(self, isolated_jobs_dir):
         # the real `python -m mathx.jobs <id>` path, pointed at a dead endpoint:

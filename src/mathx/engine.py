@@ -91,13 +91,14 @@ async def _one_sample(
     *,
     temperature: float,
     max_tokens: int,
+    system: str = SYSTEM_PROMPT,
 ) -> Sample:
     t0 = time.monotonic()
     try:
         resp = await client.chat.completions.create(
             model=model,
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": system},
                 {"role": "user", "content": problem},
             ],
             temperature=temperature,
@@ -273,9 +274,22 @@ async def solve(
     )
 
 
+def sample_to_dict(s: Sample) -> dict:
+    return {
+        "boxed": s.boxed,
+        "confidence": s.confidence,
+        "error": s.error,
+        "tokens_in": s.tokens_in,
+        "tokens_out": s.tokens_out,
+        "elapsed_ms": s.elapsed_ms,
+        "text": s.text,
+    }
+
+
 def result_to_dict(r: Result) -> dict:
     """JSON-friendly serialization; ``samples[].text`` is the full audit trail."""
     return {
+        "kind": "solve",
         "problem": r.problem,
         "answer": r.answer,
         "margin": r.margin,
@@ -288,16 +302,5 @@ def result_to_dict(r: Result) -> dict:
         "tokens_in_total": r.tokens_in_total,
         "tokens_out_total": r.tokens_out_total,
         "elapsed_ms_total": r.elapsed_ms_total,
-        "samples": [
-            {
-                "boxed": s.boxed,
-                "confidence": s.confidence,
-                "error": s.error,
-                "tokens_in": s.tokens_in,
-                "tokens_out": s.tokens_out,
-                "elapsed_ms": s.elapsed_ms,
-                "text": s.text,
-            }
-            for s in r.samples
-        ],
+        "samples": [sample_to_dict(s) for s in r.samples],
     }

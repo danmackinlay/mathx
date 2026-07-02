@@ -63,14 +63,17 @@ def submit_solve(
     if missing:
         return {"status": "error", "error": f"provider not configured: missing {', '.join(missing)}"}
     record = jobs.submit(
-        problem,
-        strategy=strategy,
-        k=k,
-        model=model,
-        base_url=base_url,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        max_k=max_k,
+        kind="solve",
+        args={
+            "problem": problem,
+            "strategy": strategy,
+            "k": k,
+            "model": model,
+            "base_url": base_url,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "max_k": max_k,
+        },
     )
     jobs.spawn_worker(record["job_id"])
     return {

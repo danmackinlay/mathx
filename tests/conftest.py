@@ -16,6 +16,7 @@ import httpx
 import pytest
 from openai import AsyncOpenAI
 
+import mathx.check as check_mod
 import mathx.engine as engine
 
 
@@ -40,19 +41,34 @@ class FakeEndpoint:
     """``replies``: one entry per expected solver call — a content string, or an
     int HTTP status to fail that call (use 400: openai retries 5xx/429).
     ``judge``: maps the candidate text of a judge request to its reply string.
+    ``by_system``: routes requests by exact system prompt to a reply string or a
+    ``callable(user_content) -> reply`` — needed when differently-prompted call
+    families run concurrently (check's script-writer vs graders), where arrival
+    order must not matter.
     """
 
-    def __init__(self, replies: list[str | int], judge: Callable[[str], str] | None = None):
+    def __init__(
+        self,
+        replies: list[str | int] = (),
+        judge: Callable[[str], str] | None = None,
+        by_system: dict[str, str | Callable[[str], str]] | None = None,
+    ):
         self.replies = list(replies)
         self.judge = judge
+        self.by_system = by_system or {}
         self.requests: list[dict] = []
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         self.requests.append(body)
-        if self.judge is not None and body["messages"][0]["content"] == engine.JUDGE_SYSTEM:
-            candidate = body["messages"][1]["content"]
-            return httpx.Response(200, json=_completion(body["model"], self.judge(candidate)))
+        system = body["messages"][0]["content"]
+        user = body["messages"][1]["content"]
+        if self.judge is not None and system == engine.JUDGE_SYSTEM:
+            return httpx.Response(200, json=_completion(body["model"], self.judge(user)))
+        if system in self.by_system:
+            responder = self.by_system[system]
+            reply = responder(user) if callable(responder) else responder
+            return httpx.Response(200, json=_completion(body["model"], reply))
         assert self.replies, "fake endpoint ran out of scripted replies"
         reply = self.replies.pop(0)
         if isinstance(reply, int):
@@ -70,8 +86,12 @@ def isolated_jobs_dir(tmp_path, monkeypatch):
 
 @pytest.fixture
 def fake_endpoint(monkeypatch):
-    def install(replies: list[str | int], judge: Callable[[str], str] | None = None) -> FakeEndpoint:
-        ep = FakeEndpoint(replies, judge)
+    def install(
+        replies: list[str | int] = (),
+        judge: Callable[[str], str] | None = None,
+        by_system: dict[str, str | Callable[[str], str]] | None = None,
+    ) -> FakeEndpoint:
+        ep = FakeEndpoint(replies, judge, by_system)
 
         def make_client(*, base_url: str, api_key: str) -> AsyncOpenAI:
             return AsyncOpenAI(
@@ -81,6 +101,7 @@ def fake_endpoint(monkeypatch):
             )
 
         monkeypatch.setattr(engine, "AsyncOpenAI", make_client)
+        monkeypatch.setattr(check_mod, "AsyncOpenAI", make_client)
         return ep
 
     return install

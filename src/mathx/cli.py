@@ -11,20 +11,19 @@ from pathlib import Path
 import click
 
 from mathx import jobs
+from mathx.check import check, check_result_to_dict
 from mathx.engine import Sample, result_to_dict, solve
-from mathx.report import render_report, render_sample
+from mathx.report import (
+    render_check_report,
+    render_check_script,
+    render_report,
+    render_sample,
+)
 
 STRATEGIES = ["cot", "maj@k", "self_verify"]
 
-# Options shared by `solve` (foreground) and `submit` (background).
-_PROVIDER_OPTIONS = [
-    click.option(
-        "--strategy",
-        type=click.Choice(STRATEGIES),
-        default="maj@k",
-        show_default=True,
-    ),
-    click.option("--k", type=int, default=16, show_default=True),
+# Options every provider-talking command shares (`solve`, `submit`, `check`).
+_ENDPOINT_OPTIONS = [
     click.option(
         "--model",
         required=True,
@@ -50,6 +49,17 @@ _PROVIDER_OPTIONS = [
         help="default: 0.0 for cot, 0.7 otherwise",
     ),
     click.option("--max-tokens", type=int, default=16000, show_default=True),
+]
+
+# Solving-specific options (`solve`, `submit` without --check).
+_SOLVE_OPTIONS = [
+    click.option(
+        "--strategy",
+        type=click.Choice(STRATEGIES),
+        default="maj@k",
+        show_default=True,
+    ),
+    click.option("--k", type=int, default=16, show_default=True),
     click.option(
         "--max-k",
         type=int,
@@ -59,11 +69,44 @@ _PROVIDER_OPTIONS = [
     ),
 ]
 
+# Claim-checking options (`check`, `submit --check`).
+_CHECK_OPTIONS = [
+    click.option(
+        "--tir-k",
+        type=int,
+        default=1,
+        show_default=True,
+        help="checker scripts to generate and execute (0 switches the tir lane off)",
+    ),
+    click.option(
+        "--grade-k",
+        type=int,
+        default=8,
+        show_default=True,
+        help="TRUE/FALSE grader samples to vote (0 switches the grade lane off)",
+    ),
+    click.option(
+        "--exec-timeout",
+        type=float,
+        default=60.0,
+        show_default=True,
+        help="seconds each checker script may run",
+    ),
+]
 
-def provider_options(f):
-    for option in reversed(_PROVIDER_OPTIONS):
-        f = option(f)
-    return f
+
+def _apply(options):
+    def deco(f):
+        for option in reversed(options):
+            f = option(f)
+        return f
+
+    return deco
+
+
+endpoint_options = _apply(_ENDPOINT_OPTIONS)
+provider_options = _apply(_SOLVE_OPTIONS + _ENDPOINT_OPTIONS)
+check_options = _apply(_CHECK_OPTIONS)
 
 
 @click.group()
@@ -160,9 +203,86 @@ def solve_cmd(
         sys.exit(1)
 
 
+@cli.command(name="check")
+@click.argument("claim")
+@endpoint_options
+@check_options
+@click.option(
+    "--out",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="write full JSON to this path (audit trail)",
+)
+def check_cmd(
+    claim: str,
+    model: str,
+    base_url: str,
+    api_key: str,
+    temperature: float | None,
+    max_tokens: int,
+    tir_k: int,
+    grade_k: int,
+    exec_timeout: float,
+    out: Path | None,
+) -> None:
+    """Check a claim: verdict + evidence, never proof.
+
+    Two lanes — tir (a model writes a sympy verification script; mathx executes
+    it in a local subprocess) and grade (a TRUE/FALSE vote of k samples).
+    Exit code: 0 supported, 1 refuted, 2 conflict or unclear.
+    """
+    try:
+        result = asyncio.run(
+            check(
+                claim,
+                model=model,
+                base_url=base_url,
+                api_key=api_key,
+                tir_k=tir_k,
+                grade_k=grade_k,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                exec_timeout_s=exec_timeout,
+            )
+        )
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
+
+    if out is not None:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(check_result_to_dict(result), indent=2))
+
+    click.echo(f"claim: {claim}")
+    click.echo(f"status: {result.summary}")
+    for i, run in enumerate(result.tir_runs):
+        note = f" — {run.note}" if run.note else ""
+        timing = "timed out" if run.timed_out else f"{run.exec_elapsed_ms} ms"
+        click.echo(f"tir[{i}]: {run.verdict}   ({timing}){note}")
+    if result.grade_verdict is not None:
+        click.echo(f"grade: {result.grade_verdict} {result.grade_margin}")
+    click.echo(
+        f"tokens: in={result.tokens_in_total} out={result.tokens_out_total}   "
+        f"elapsed: {result.elapsed_ms_total} ms"
+    )
+    if out is not None:
+        click.echo(f"json -> {out}", err=True)
+    if result.status == "refuted":
+        sys.exit(1)
+    if result.status in ("conflict", "unclear"):
+        sys.exit(2)
+
+
 @cli.command(name="submit")
-@click.argument("problem")
+@click.argument("problem", metavar="PROBLEM_OR_CLAIM")
 @provider_options
+@check_options
+@click.option(
+    "--check",
+    "as_check",
+    is_flag=True,
+    help="treat the argument as a CLAIM and run `mathx check` in the background "
+    "(--tir-k/--grade-k/--exec-timeout apply; --strategy/--k/--max-k don't)",
+)
 def submit_cmd(
     problem: str,
     strategy: str,
@@ -173,22 +293,41 @@ def submit_cmd(
     temperature: float | None,
     max_tokens: int,
     max_k: int | None,
+    tir_k: int,
+    grade_k: int,
+    exec_timeout: float,
+    as_check: bool,
 ) -> None:
-    """Dispatch a solve in the background; print the job id and return at once.
+    """Dispatch a solve (or, with --check, a claim check) in the background.
 
-    The fan-out runs in a detached worker that outlives this command. Poll with
-    `mathx status <job_id>`; when complete, `mathx show <job_id>` renders it.
+    Prints the job id and returns at once; the work runs in a detached worker
+    that outlives this command. Poll with `mathx status <job_id>`; when
+    complete, `mathx show <job_id>` renders it.
     """
-    record = jobs.submit(
-        problem,
-        strategy=strategy,
-        k=k,
-        model=model,
-        base_url=base_url,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        max_k=max_k,
-    )
+    if as_check:
+        args = {
+            "claim": problem,
+            "tir_k": tir_k,
+            "grade_k": grade_k,
+            "exec_timeout_s": exec_timeout,
+            "model": model,
+            "base_url": base_url,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        record = jobs.submit(kind="check", args=args)
+    else:
+        args = {
+            "problem": problem,
+            "strategy": strategy,
+            "k": k,
+            "model": model,
+            "base_url": base_url,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "max_k": max_k,
+        }
+        record = jobs.submit(kind="solve", args=args)
     jobs.spawn_worker(record["job_id"], api_key=api_key)
     click.echo(record["job_id"])
     click.echo(
@@ -209,10 +348,12 @@ def status_cmd(job_id: str, as_json: bool) -> None:
     if as_json:
         click.echo(json.dumps(record, indent=2))
     status = record.get("status")
+    args = record.get("args", {})
+    subject = args.get("problem") or args.get("claim") or ""
     if status == "running":
         if not as_json:
             click.echo(f"job {job_id}: running   elapsed: {record.get('elapsed_ms', 0) / 1000:.0f} s")
-            click.echo(f"problem: {record['args']['problem']}")
+            click.echo(f"{record.get('kind', 'solve')}: {subject}")
         sys.exit(2)
     if status == "error":
         if not as_json:
@@ -222,10 +363,13 @@ def status_cmd(job_id: str, as_json: bool) -> None:
     if not as_json:
         result = record.get("result") or {}
         click.echo(f"job {job_id}: complete")
-        click.echo(
-            f"answer: {result.get('answer')}   margin: {result.get('margin')}   "
-            f"k: {result.get('k')}"
-        )
+        if result.get("kind") == "check":
+            click.echo(f"status: {result.get('summary') or result.get('status')}")
+        else:
+            click.echo(
+                f"answer: {result.get('answer')}   margin: {result.get('margin')}   "
+                f"k: {result.get('k')}"
+            )
         click.echo(f"full report: mathx show {job_id}", err=True)
 
 
@@ -253,16 +397,21 @@ def jobs_cmd(as_json: bool, prune: float | None) -> None:
     for r in records:
         result = r.get("result") or {}
         if r.get("status") == "complete":
-            outcome = f"{result.get('answer')} ({result.get('margin')})"
+            if result.get("kind") == "check":
+                margin = (result.get("grade") or {}).get("margin")
+                outcome = result.get("status", "") + (f" ({margin})" if margin else "")
+            else:
+                outcome = f"{result.get('answer')} ({result.get('margin')})"
         elif r.get("status") == "error":
             outcome = (r.get("error") or "")[:40]
         else:
             outcome = ""
-        problem = " ".join(str(r.get("args", {}).get("problem", "")).split())
-        if len(problem) > 40:
-            problem = problem[:39] + "…"
+        args = r.get("args", {})
+        subject = " ".join(str(args.get("problem") or args.get("claim") or "").split())
+        if len(subject) > 40:
+            subject = subject[:39] + "…"
         started = (r.get("started_at") or "")[:19]
-        click.echo(f"{r['job_id']}  {r.get('status', '?'):<8}  {started}  {outcome:<24}  {problem}")
+        click.echo(f"{r['job_id']}  {r.get('status', '?'):<8}  {started}  {outcome:<24}  {subject}")
 
 
 @cli.command(name="show")
@@ -273,10 +422,18 @@ def jobs_cmd(as_json: bool, prune: float | None) -> None:
     type=int,
     default=None,
     metavar="N",
-    help="print sample N's full reasoning text instead of the report",
+    help="print sample N's full reasoning (for check records: grader sample N)",
 )
-def show_cmd(run: str, sample_index: int | None) -> None:
-    """Render a run's audit record — a JSON file from `mathx solve --out`, or a job id."""
+@click.option(
+    "--script",
+    "script_index",
+    type=int,
+    default=None,
+    metavar="N",
+    help="check records only: print checker script N's code and output",
+)
+def show_cmd(run: str, sample_index: int | None, script_index: int | None) -> None:
+    """Render a run's audit record — a JSON file from `--out`, or a job id."""
     path = Path(run)
     if path.is_file():
         try:
@@ -299,10 +456,24 @@ def show_cmd(run: str, sample_index: int | None) -> None:
             raise click.ClickException(f"job {run} errored: {record.get('error')}")
     # a job record wraps the run under "result"; a --out file IS the run
     run_dict = record.get("result") if "result" in record else record
+    kind = run_dict.get("kind") or ("check" if "claim" in run_dict else "solve")
     try:
-        text = (
-            render_report(run_dict) if sample_index is None else render_sample(run_dict, sample_index)
-        )
+        if kind == "check":
+            if script_index is not None:
+                text = render_check_script(run_dict, script_index)
+            elif sample_index is not None:
+                grade = run_dict.get("grade") or {}
+                text = render_sample({"samples": grade.get("samples") or []}, sample_index)
+            else:
+                text = render_check_report(run_dict)
+        else:
+            if script_index is not None:
+                raise click.ClickException("--script only applies to check records")
+            text = (
+                render_report(run_dict)
+                if sample_index is None
+                else render_sample(run_dict, sample_index)
+            )
     except IndexError as e:
         raise click.ClickException(str(e)) from e
     click.echo(text)

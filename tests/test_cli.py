@@ -7,7 +7,48 @@ import pytest
 from click.testing import CliRunner
 
 from mathx import jobs
+from mathx.check import CHECKER_SYSTEM, GRADER_SYSTEM
 from mathx.cli import cli
+
+PASS_SCRIPT = '```python\nprint("VERDICT: PASS")\n```'
+FAIL_SCRIPT = '```python\nprint("COUNTEREXAMPLE: n=5")\nprint("VERDICT: FAIL")\n```'
+
+CHECK_RESULT = {
+    "kind": "check",
+    "claim": "2+2=4",
+    "status": "supported",
+    "summary": "supported — tir: pass (1 script) · grade: true (2/2)",
+    "model": "m",
+    "tir_k": 1,
+    "grade_k": 2,
+    "tokens_in_total": 10,
+    "tokens_out_total": 20,
+    "elapsed_ms_total": 100,
+    "tir": [
+        {
+            "verdict": "pass",
+            "note": None,
+            "exit_code": 0,
+            "timed_out": False,
+            "exec_elapsed_ms": 42,
+            "code": "print('VERDICT: PASS')",
+            "stdout": "VERDICT: PASS\n",
+            "stderr": "",
+            "gen": {"boxed": None, "text": "generation text"},
+        }
+    ],
+    "grade": {
+        "verdict": "true",
+        "margin": "2/2",
+        "true": 2,
+        "false": 0,
+        "abstain": 0,
+        "samples": [
+            {"boxed": "TRUE", "text": "grader reasoning A"},
+            {"boxed": "TRUE", "text": "grader reasoning B"},
+        ],
+    },
+}
 
 PROVIDER_ARGS = [
     "--model", "test-model",
@@ -91,7 +132,17 @@ def no_spawn(monkeypatch):
 
 
 def submit_job(problem: str = "6*7?") -> dict:
-    return jobs.submit(problem, model="m", base_url="http://b/v1")
+    args = {
+        "problem": problem,
+        "strategy": "maj@k",
+        "k": 16,
+        "model": "m",
+        "base_url": "http://b/v1",
+        "temperature": None,
+        "max_tokens": 16000,
+        "max_k": None,
+    }
+    return jobs.submit(kind="solve", args=args)
 
 
 class TestSubmit:
@@ -102,9 +153,54 @@ class TestSubmit:
         assert no_spawn == [(job_id, {"api_key": "test-key"})]
         record = jobs.read(job_id)
         assert record["status"] == "running"
+        assert record["kind"] == "solve"
         assert record["args"]["problem"] == "6*7?"
         assert record["args"]["k"] == 4
         assert f"mathx status {job_id}" in result.stderr
+
+    def test_check_flag_submits_a_check_job(self, no_spawn):
+        result = invoke(
+            "submit", "2+2=4", *PROVIDER_ARGS, "--check", "--tir-k", "2", "--grade-k", "0"
+        )
+        assert result.exit_code == 0, result.output
+        record = jobs.read(result.stdout.strip())
+        assert record["kind"] == "check"
+        assert record["args"]["claim"] == "2+2=4"
+        assert record["args"]["tir_k"] == 2
+        assert record["args"]["grade_k"] == 0
+        assert "problem" not in record["args"]
+
+
+class TestCheck:
+    def test_supported_end_to_end(self, fake_endpoint, tmp_path):
+        fake_endpoint(by_system={CHECKER_SYSTEM: PASS_SCRIPT, GRADER_SYSTEM: r"\boxed{TRUE}"})
+        out = tmp_path / "check.json"
+        result = invoke("check", "2+2=4", *PROVIDER_ARGS, "--grade-k", "2", "--out", str(out))
+        assert result.exit_code == 0, result.output
+        assert "status: supported" in result.output
+        assert "tir[0]: pass" in result.output
+        assert "grade: true 2/2" in result.output
+        assert json.loads(out.read_text())["kind"] == "check"
+
+    def test_refuted_exits_1(self, fake_endpoint):
+        fake_endpoint(by_system={CHECKER_SYSTEM: FAIL_SCRIPT, GRADER_SYSTEM: r"\boxed{FALSE}"})
+        result = invoke("check", "2+2=5", *PROVIDER_ARGS, "--grade-k", "1")
+        assert result.exit_code == 1
+        assert "status: refuted" in result.output
+        assert "COUNTEREXAMPLE" not in result.output  # note is rendered, not raw stdout
+        assert "n=5" in result.output
+
+    def test_unclear_exits_2(self, fake_endpoint):
+        replies = iter([r"\boxed{TRUE}", r"\boxed{FALSE}"])
+        fake_endpoint(by_system={GRADER_SYSTEM: lambda _u: next(replies)})
+        result = invoke("check", "2+2=4", *PROVIDER_ARGS, "--tir-k", "0", "--grade-k", "2")
+        assert result.exit_code == 2
+        assert "unclear" in result.output
+
+    def test_both_lanes_off_rejected(self):
+        result = invoke("check", "2+2=4", *PROVIDER_ARGS, "--tir-k", "0", "--grade-k", "0")
+        assert result.exit_code == 1
+        assert "at least one lane" in result.output
 
 
 class TestStatus:
@@ -233,3 +329,55 @@ class TestShow:
         result = invoke("show", record["job_id"])
         assert result.exit_code != 0
         assert "kaboom" in result.output
+
+
+def finalize_check_job() -> dict:
+    record = jobs.submit(
+        kind="check",
+        args={"claim": "2+2=4", "tir_k": 1, "grade_k": 2, "model": "m", "base_url": "http://b/v1"},
+    )
+    return jobs.finalize(record["job_id"], result=CHECK_RESULT)
+
+
+class TestCheckRecords:
+    def test_show_renders_check_report(self):
+        record = finalize_check_job()
+        result = invoke("show", record["job_id"])
+        assert result.exit_code == 0, result.output
+        assert "claim: 2+2=4" in result.output
+        assert "status: supported" in result.output
+        assert "grade: true 2/2" in result.output
+        assert "evidence, not proof" in result.output
+
+    def test_show_script_dump(self):
+        record = finalize_check_job()
+        result = invoke("show", record["job_id"], "--script", "0")
+        assert result.exit_code == 0, result.output
+        assert "print('VERDICT: PASS')" in result.output
+        assert "--- stdout ---" in result.output
+
+    def test_show_sample_dumps_grader(self):
+        record = finalize_check_job()
+        result = invoke("show", record["job_id"], "--sample", "1")
+        assert result.exit_code == 0, result.output
+        assert "grader reasoning B" in result.output
+
+    def test_show_script_on_solve_record_errors(self):
+        record = submit_job()
+        jobs.finalize(record["job_id"], result={"kind": "solve", "answer": "42", "votes": {}})
+        result = invoke("show", record["job_id"], "--script", "0")
+        assert result.exit_code != 0
+        assert "only applies to check records" in result.output
+
+    def test_status_shows_check_summary(self):
+        record = finalize_check_job()
+        result = invoke("status", record["job_id"])
+        assert result.exit_code == 0, result.output
+        assert "status: supported —" in result.output
+
+    def test_jobs_listing_shows_check_outcome(self):
+        finalize_check_job()
+        result = invoke("jobs")
+        assert result.exit_code == 0, result.output
+        assert "supported (2/2)" in result.output
+        assert "2+2=4" in result.output
