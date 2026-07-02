@@ -1,11 +1,11 @@
 # mathx
 
-A minimal mathematical oracle for AI agents. CLI dispatch, JSON return, optional voting.
+A minimal mathematical oracle for AI agents.
+If you ask it to prove something it dispatches to the specialist sub-model, with optional multi-sampling and voting.
 
-We point any OpenAI-compatible chat endpoint at a maths problem, sample it `k` times, cluster the
-answers by [math-verify](https://pypi.org/project/math-verify/) equivalence (so `\frac{1}{2}` votes
-together with `0.5`), and write the modal cluster — with a confidence margin and a per-sample audit
-trail — to a JSON file the calling agent reads. Voting is optional: `--strategy cot` is one sample
+We point any OpenAI-compatible chat endpoint at a maths problem, sample it `k` times, detect equivalence using [math-verify](https://pypi.org/project/math-verify/) (so `\frac{1}{2}` is the same as `0.5`), and return the modal answer, with confidence margin and audit train.
+
+Voting is optional: `--strategy cot` is one sample
 at temperature 0.
 
 Coded during while writing [a blog post](https://danmackinlay.name/notebook/automatic_maths.html) on applied LLM-for-math.
@@ -56,12 +56,10 @@ see [`examples/qwen_agent_tool.py`](examples/qwen_agent_tool.py).
 |---|---|
 | `MATHX_MODEL` | Model name, e.g. `deepseek/deepseek-v4-pro`. |
 | `MATHX_BASE_URL` | OpenAI-compatible endpoint, e.g. `https://api.featherless.ai/v1`. |
-| `MATHX_API_KEY` | Preferred. Set to whatever provider's key value. |
-| `OPENAI_API_KEY` | Fallback if `MATHX_API_KEY` is not set. |
+| `MATHX_API_KEY` | Set to whatever provider's key value. (Falls back to `OPENAI_API_KEY`) |
 
-Set them however you set env vars — your shell-rc, your own project's direnv, or inline — or pass
-`--model` / `--base-url` / `--api-key` explicitly. mathx just reads the environment; it ships no
-`.env` loader of its own.
+Set them however you set env vars, or pass
+`--model` / `--base-url` / `--api-key` explicitly.
 
 The repo does include a one-line `.envrc` (`dotenv_if_exists`): if you hack on mathx from a clone
 with [direnv](https://direnv.net), it auto-loads a git-ignored `.env` so a provider key stays handy
