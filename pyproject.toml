@@ -19,5 +19,14 @@ dependencies = [
 [project.scripts]
 mathx = "mathx.cli:main"
 
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "httpx>=0.27",  # mock transport for the fake OpenAI-compatible endpoint in tests
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/mathx"]

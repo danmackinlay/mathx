@@ -31,6 +31,8 @@ Strategy guidance:
 - `--strategy maj@k` (default) is the right choice almost always.
 - `--strategy self_verify` if you want each sample weighted by a judge pass — slower, but rescues problems where the modal answer is plausibly wrong.
 - `--strategy cot --k 1` only for a quick sanity check.
+- Add `--max-k 64` when you can't afford a second dispatch: on a weak vote (no strict
+  majority) mathx doubles k and re-votes automatically, up to that cap.
 
 ## How to interpret the result
 
@@ -49,8 +51,9 @@ The JSON has:
 - **`margin`** is the confidence signal. `14/16` means 14 of 16 voters agreed (after maths-equivalence clustering). Treat it like:
   - **≥ 12/16** — trust the answer; commit.
   - **8–11 / 16** — soft majority; mention the disagreement in your reply rather than asserting.
-  - **≤ 7/16 or a 6/5/5 split** — escalate `--k` (try 32 or 64) or surface the disagreement to the user. Don't just commit to the modal answer.
+  - **≤ 7/16 or a 6/5/5 split** — re-dispatch with `--max-k 64` (auto-escalation) or surface the disagreement to the user. Don't just commit to the modal answer.
 - **`samples[].text`** is the full per-sample reasoning. Useful when the user asks "how did it get there"; otherwise leave it in the file as an audit trail.
+- **`mathx show <out>.json`** renders the record for inspection — vote histogram, per-sample answers, disagreement summary — cheaper than reading the raw JSON. `--sample N` prints one sample's full reasoning.
 - **`answer: null`** means every sample failed to produce a `\boxed{...}`. Something is wrong (bad model, bad prompt, server down). First run `mathx doctor` to rule out a broken setup, then `--strategy cot --k 1` to get one trace and diagnose.
 
 ## Privacy

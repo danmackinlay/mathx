@@ -11,7 +11,8 @@ from __future__ import annotations
 import asyncio
 import re
 import time
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Literal
 
 from math_verify import parse, verify
@@ -56,6 +57,8 @@ class Result:
     model: str
     base_url: str
     k: int
+    problem: str = ""
+    escalations: int = 0
     tokens_in_total: int = 0
     tokens_out_total: int = 0
     elapsed_ms_total: int = 0
@@ -174,6 +177,14 @@ def _cluster_and_vote(samples: list[Sample]) -> tuple[str | None, str, dict[str,
     return winner, margin, votes
 
 
+def _winner_share(answer: str | None, votes: dict[str, float]) -> float:
+    """Winner's fraction of the total vote weight (0.0 when there is no winner)."""
+    if answer is None or not votes:
+        return 0.0
+    total = sum(votes.values())
+    return votes.get(answer, 0.0) / total if total else 0.0
+
+
 async def solve(
     problem: str,
     *,
@@ -184,11 +195,25 @@ async def solve(
     strategy: Strategy = "maj@k",
     temperature: float | None = None,
     max_tokens: int = 16000,
+    max_k: int | None = None,
+    on_sample: Callable[[Sample, int, int], None] | None = None,
+    on_escalate: Callable[[str, int], None] | None = None,
 ) -> Result:
     """Run the strategy, cluster, and return a Result.
 
     For ``cot``: k is ignored, T defaults to 0.0. For ``maj@k`` / ``self_verify``:
     T defaults to 0.7. Pass an explicit ``temperature`` to override.
+
+    ``max_k`` turns on auto-escalation: after voting, if the winner holds no
+    strict majority of the vote weight (a 6/5/5-style split), double the sample
+    count and re-vote over everything drawn so far, until the majority is strict
+    or ``max_k`` samples have been drawn. No winner at all (zero boxed answers)
+    does NOT escalate — that's a setup problem, not a split. Ignored for ``cot``.
+
+    Progress hooks (both optional, called from the event loop):
+    ``on_sample(sample, done, planned)`` after each sample lands (and, for
+    ``self_verify``, is judged); ``on_escalate(margin, new_planned)`` when a weak
+    margin triggers another round.
     """
     t0 = time.monotonic()
     client = AsyncOpenAI(base_url=base_url, api_key=api_key)
@@ -200,24 +225,36 @@ async def solve(
     else:
         raise ValueError(f"unknown strategy: {strategy}")
 
-    samples = await asyncio.gather(
-        *[
-            _one_sample(client, model, problem, temperature=temp, max_tokens=max_tokens)
-            for _ in range(kk)
-        ]
-    )
+    samples: list[Sample] = []
+    planned = kk
+    escalations = 0
+    done = 0
 
-    if strategy == "self_verify":
-        async def annotate(s: Sample) -> Sample:
+    async def one() -> Sample:
+        nonlocal done
+        s = await _one_sample(client, model, problem, temperature=temp, max_tokens=max_tokens)
+        if strategy == "self_verify":
             if s.text is None or s.boxed is None:
                 s.confidence = 0.0
             else:
                 s.confidence = await _judge_one(client, model, problem, s.text)
-            return s
+        done += 1
+        if on_sample is not None:
+            on_sample(s, done, planned)
+        return s
 
-        samples = await asyncio.gather(*[annotate(s) for s in samples])
-
-    winner, margin, votes = _cluster_and_vote(samples)
+    while True:
+        new = await asyncio.gather(*[one() for _ in range(planned - len(samples))])
+        samples.extend(new)
+        winner, margin, votes = _cluster_and_vote(samples)
+        if max_k is None or strategy == "cot" or winner is None:
+            break
+        if _winner_share(winner, votes) > 0.5 or len(samples) >= max_k:
+            break
+        planned = min(len(samples) * 2, max_k)
+        escalations += 1
+        if on_escalate is not None:
+            on_escalate(margin, planned)
 
     return Result(
         answer=winner,
@@ -227,7 +264,9 @@ async def solve(
         strategy=strategy,
         model=model,
         base_url=base_url,
-        k=kk,
+        k=len(samples),
+        problem=problem,
+        escalations=escalations,
         tokens_in_total=sum(s.tokens_in for s in samples),
         tokens_out_total=sum(s.tokens_out for s in samples),
         elapsed_ms_total=int((time.monotonic() - t0) * 1000),
@@ -237,10 +276,12 @@ async def solve(
 def result_to_dict(r: Result) -> dict:
     """JSON-friendly serialization; ``samples[].text`` is the full audit trail."""
     return {
+        "problem": r.problem,
         "answer": r.answer,
         "margin": r.margin,
         "votes": r.votes,
         "strategy": r.strategy,
+        "escalations": r.escalations,
         "model": r.model,
         "base_url": r.base_url,
         "k": r.k,

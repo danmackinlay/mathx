@@ -31,9 +31,9 @@ Honesty constraint: verdicts are evidence, not certainty. The display must carry
 
 ## Staged roadmap
 
-**Stage 1 — display what's already computed** (pure reader)
-- `mathx show <run.json>`: vote histogram, margin, per-sample answers, disagreement surfacing.
-- Live progress during solve; auto-escalation on weak margin (re-run higher k on a 6/5/5 split).
+**Stage 1 — display what's already computed** (pure reader) — ✅ done
+- `mathx show <run.json>`: vote histogram, margin, per-sample answers, disagreement surfacing (`src/mathx/report.py`).
+- Live progress during solve (`--progress`, on by default on a TTY); auto-escalation on weak margin via `--max-k` (no strict majority → double k, re-vote over all samples, repeat up to the cap).
 
 **Stage 2 — job store + async handles** (implement [MCP_PLAN.md](MCP_PLAN.md))
 - File-per-job store → `submit`/`status`/`jobs` CLI verbs; MCP server (`submit_solve`/`check_solve`). Runs get identity and history — the substrate every later surface reads.
@@ -48,6 +48,6 @@ Honesty constraint: verdicts are evidence, not certainty. The display must carry
 **Stage 5 — the face**
 - MCP registration in Open WebUI (free after Stage 2); optionally a Pipeline that owns the loop and streams claim-ledger progress. A ledger TUI/web view once the loop earns it.
 
-**Cross-cutting prerequisite:** no tests exist yet. Before Stage 2 adds state, add pytest with a mocked OpenAI-compatible endpoint (`_cluster_and_vote`, `result_to_dict` are pure and easy to pin).
+**Cross-cutting prerequisite** — ✅ done: pytest suite in `tests/` with a mocked OpenAI-compatible endpoint (httpx `MockTransport` under the real openai client — full wire path, no network); covers the pure helpers, `solve()` incl. escalation, the report renderers, and both CLI verbs. `uv run pytest`.
 
 Every stage is independently useful, and the oracle never stops being the thin swappable thing — it just gets called per claim instead of per problem.

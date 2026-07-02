@@ -77,7 +77,8 @@ while you test.
 
 ## Status
 
-Early. Wired end-to-end (engine, CLI, skill, install).
+Early. Wired end-to-end (engine, CLI, skill, install), with an offline pytest suite
+(`uv run pytest` — samples are served by a mocked OpenAI-compatible endpoint, no key needed).
 Test it against your prefered backend:
 
 ```bash
@@ -99,7 +100,17 @@ mathx solve "What is 7^999 mod 1000?" \
 
 `--model`, `--base-url`, and `--api-key` are required but read from env vars by default (see
 *Environment variables*). Stdout is a one-screen summary (answer, margin, vote split, token use);
-`--out` writes the structured JSON the calling agent parses.
+`--out` writes the structured JSON the calling agent parses. When stderr is a TTY, per-sample
+progress streams there as the fan-out runs (`--progress/--no-progress` to force it either way).
+
+Two options worth knowing:
+
+- `--max-k 64` — auto-escalation. If the winning cluster holds no strict majority of the vote
+  (a 6/5/5-style split), mathx doubles the sample count and re-votes over everything drawn so
+  far, up to 64 samples total. The JSON records how many escalations fired.
+- `mathx show <run.json>` — render a past run's audit record: vote histogram, per-sample
+  answers with agree/disagree marks (by the same math-verify equivalence the vote used), and a
+  disagreement summary. `mathx show <run.json> --sample 3` prints sample 3's full reasoning.
 
 If the agent's harness supports background tool execution (Claude Code's `run_in_background=true`),
 dispatch in the background and poll the `--out` file when the fan-out finishes.
@@ -114,10 +125,12 @@ directory (see *Install*).
 
 ```json
 {
+  "problem": "What is 7^999 mod 1000?",
   "answer": "143",
   "margin": "14/16",
   "votes": {"143": 14.0, "43": 2.0},
   "strategy": "maj@k",
+  "escalations": 0,
   "model": "deepseek/deepseek-v4-pro",
   "base_url": "https://openrouter.ai/api/v1",
   "k": 16,
@@ -145,6 +158,8 @@ directory (see *Install*).
   or punt.
 - **`votes`** — every equivalence-cluster representative with its accumulated weight (sample count
   for `cot`/`maj@k`; sum of judge confidences for `self_verify`).
+- **`escalations`** — how many times a weak margin triggered a doubling of `k` (only nonzero when
+  `--max-k` is passed); `k` is the total number of samples actually drawn.
 - **`samples[].confidence`** — only populated by `self_verify` (the judge's 0–1 score).
 - **`samples[].text`** — the full per-sample reasoning, kept as audit trail. Can be large. Maths
   in it uses `$…$` / `$$…$$` (mathx pins the model to these — `\(…\)` / `\[…\]` render as raw
@@ -165,9 +180,13 @@ directory (see *Install*).
 ```
 src/mathx/
   engine.py    sample, judge, cluster-and-vote, solve(); the maths logic
-  cli.py       click group with `solve` + `doctor` subcommands
+  report.py    pure renderers over the run JSON (`mathx show`)
+  cli.py       click group with `solve` + `show` + `doctor` subcommands
 skills/maths-oracle/
   SKILL.md     agent-facing trigger phrases + dispatch recipe (any agent via npx skills)
+tests/
+  conftest.py  fake OpenAI-compatible endpoint (httpx MockTransport under the real client)
+  test_*.py    engine, report, CLI — `uv run pytest`, no network needed
 ```
 
 The engine is one file by design. Public API: `from mathx import solve` returns a `Result`

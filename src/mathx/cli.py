@@ -1,4 +1,4 @@
-"""mathx CLI: ``mathx solve …``, ``mathx doctor``."""
+"""mathx CLI: ``mathx solve …``, ``mathx show …``, ``mathx doctor``."""
 from __future__ import annotations
 
 import asyncio
@@ -10,7 +10,8 @@ from pathlib import Path
 
 import click
 
-from mathx.engine import result_to_dict, solve
+from mathx.engine import Sample, result_to_dict, solve
+from mathx.report import render_report, render_sample
 
 STRATEGIES = ["cot", "maj@k", "self_verify"]
 
@@ -56,6 +57,18 @@ def cli() -> None:
 )
 @click.option("--max-tokens", type=int, default=16000, show_default=True)
 @click.option(
+    "--max-k",
+    type=int,
+    default=None,
+    help="auto-escalate: while the winner holds no strict majority of the vote, "
+    "double k and re-vote, up to this many samples total",
+)
+@click.option(
+    "--progress/--no-progress",
+    default=None,
+    help="stream per-sample progress to stderr [default: on when stderr is a TTY]",
+)
+@click.option(
     "--out",
     type=click.Path(dir_okay=False, path_type=Path),
     default=None,
@@ -70,9 +83,29 @@ def solve_cmd(
     api_key: str,
     temperature: float | None,
     max_tokens: int,
+    max_k: int | None,
+    progress: bool | None,
     out: Path | None,
 ) -> None:
     """Fan out k samples and vote on the answer."""
+    on_sample = on_escalate = None
+    show_progress = progress if progress is not None else sys.stderr.isatty()
+    if show_progress:
+
+        def on_sample(s: Sample, done: int, planned: int) -> None:
+            if s.error is not None:
+                status = f"error: {s.error}"
+            elif s.boxed is None:
+                status = "no \\boxed{...} answer"
+            else:
+                status = s.boxed
+            if len(status) > 60:
+                status = status[:59] + "…"
+            click.echo(f"[{done}/{planned}] {s.elapsed_ms / 1000:.1f}s  {status}", err=True)
+
+        def on_escalate(margin: str, new_planned: int) -> None:
+            click.echo(f"margin {margin} is weak — escalating to k={new_planned}", err=True)
+
     result = asyncio.run(
         solve(
             problem,
@@ -83,6 +116,9 @@ def solve_cmd(
             strategy=strategy,  # type: ignore[arg-type]
             temperature=temperature,
             max_tokens=max_tokens,
+            max_k=max_k,
+            on_sample=on_sample,
+            on_escalate=on_escalate,
         )
     )
 
@@ -91,10 +127,13 @@ def solve_cmd(
         out.write_text(json.dumps(result_to_dict(result), indent=2))
 
     click.echo(f"answer: {result.answer}")
-    click.echo(
+    meta = (
         f"margin: {result.margin}   strategy: {result.strategy}   "
         f"model: {result.model}   k: {result.k}"
     )
+    if result.escalations:
+        meta += f"   escalations: {result.escalations}"
+    click.echo(meta)
     click.echo(
         f"tokens: in={result.tokens_in_total} out={result.tokens_out_total}   "
         f"elapsed: {result.elapsed_ms_total} ms"
@@ -107,6 +146,33 @@ def solve_cmd(
         click.echo(f"json -> {out}", err=True)
     if result.answer is None:
         sys.exit(1)
+
+
+@cli.command(name="show")
+@click.argument(
+    "run_json", type=click.Path(exists=True, dir_okay=False, path_type=Path)
+)
+@click.option(
+    "--sample",
+    "sample_index",
+    type=int,
+    default=None,
+    metavar="N",
+    help="print sample N's full reasoning text instead of the report",
+)
+def show_cmd(run_json: Path, sample_index: int | None) -> None:
+    """Render a run's JSON audit record (written by `mathx solve --out`)."""
+    try:
+        run = json.loads(run_json.read_text())
+    except json.JSONDecodeError as e:
+        raise click.ClickException(f"{run_json} is not valid JSON: {e}") from e
+    if not isinstance(run, dict):
+        raise click.ClickException(f"{run_json} is not a mathx run record")
+    try:
+        text = render_report(run) if sample_index is None else render_sample(run, sample_index)
+    except IndexError as e:
+        raise click.ClickException(str(e)) from e
+    click.echo(text)
 
 
 # The maths-oracle SKILL.md ships in this repo at skills/ (agent-neutral); install it
