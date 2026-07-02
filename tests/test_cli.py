@@ -1,10 +1,12 @@
-"""CLI tests: `solve` end-to-end against the fake endpoint, and `show`."""
+"""CLI tests: `solve` end-to-end against the fake endpoint, the job verbs, `show`."""
 from __future__ import annotations
 
 import json
 
+import pytest
 from click.testing import CliRunner
 
+from mathx import jobs
 from mathx.cli import cli
 
 PROVIDER_ARGS = [
@@ -81,6 +83,96 @@ class TestSolve:
         assert "answer: None" in result.output
 
 
+@pytest.fixture
+def no_spawn(monkeypatch):
+    spawned = []
+    monkeypatch.setattr(jobs, "spawn_worker", lambda job_id, **kw: spawned.append((job_id, kw)))
+    return spawned
+
+
+def submit_job(problem: str = "6*7?") -> dict:
+    return jobs.submit(problem, model="m", base_url="http://b/v1")
+
+
+class TestSubmit:
+    def test_prints_job_id_and_spawns_with_key(self, no_spawn):
+        result = invoke("submit", "6*7?", *PROVIDER_ARGS, "--k", "4")
+        assert result.exit_code == 0, result.output
+        job_id = result.stdout.strip()
+        assert no_spawn == [(job_id, {"api_key": "test-key"})]
+        record = jobs.read(job_id)
+        assert record["status"] == "running"
+        assert record["args"]["problem"] == "6*7?"
+        assert record["args"]["k"] == 4
+        assert f"mathx status {job_id}" in result.stderr
+
+
+class TestStatus:
+    def test_running_exits_2(self):
+        record = submit_job()
+        result = invoke("status", record["job_id"])
+        assert result.exit_code == 2
+        assert "running" in result.output
+        assert "6*7?" in result.output
+
+    def test_complete_exits_0(self):
+        record = submit_job()
+        jobs.finalize(record["job_id"], result={"answer": "42", "margin": "3/4", "k": 4})
+        result = invoke("status", record["job_id"])
+        assert result.exit_code == 0, result.output
+        assert "answer: 42" in result.output
+        assert "margin: 3/4" in result.output
+
+    def test_errored_exits_3(self):
+        record = submit_job()
+        jobs.fail(record["job_id"], error="kaboom")
+        result = invoke("status", record["job_id"])
+        assert result.exit_code == 3
+        assert "kaboom" in result.output
+
+    def test_json_flag(self):
+        record = submit_job()
+        result = invoke("status", record["job_id"], "--json")
+        assert result.exit_code == 2
+        parsed = json.loads(result.stdout)
+        assert parsed["job_id"] == record["job_id"]
+        assert parsed["status"] == "running"
+
+    def test_unknown_id(self):
+        result = invoke("status", "20990101T000000Z-dead")
+        assert result.exit_code == 1
+        assert "unknown job id" in result.output
+
+
+class TestJobs:
+    def test_empty(self):
+        result = invoke("jobs")
+        assert result.exit_code == 0
+        assert "no jobs yet" in result.output
+
+    def test_lists_newest_first_with_outcome(self):
+        done = submit_job("solved one")
+        jobs.finalize(done["job_id"], result={"answer": "42", "margin": "4/4"})
+        running = submit_job("still going")
+        result = invoke("jobs")
+        assert result.exit_code == 0, result.output
+        lines = result.output.strip().splitlines()
+        assert running["job_id"] in lines[0] and "still going" in lines[0]
+        assert done["job_id"] in lines[1] and "42 (4/4)" in lines[1]
+
+    def test_json_flag(self):
+        submit_job()
+        parsed = json.loads(invoke("jobs", "--json").stdout)
+        assert len(parsed) == 1 and parsed[0]["status"] == "running"
+
+    def test_prune(self):
+        record = submit_job()
+        jobs.finalize(record["job_id"], result={"answer": "1"})
+        result = invoke("jobs", "--prune", "0")
+        assert "pruned 1 job(s)" in result.stderr
+        assert "no jobs yet" in result.stdout
+
+
 class TestShow:
     def test_report(self, tmp_path):
         result = invoke("show", str(write_run(tmp_path)))
@@ -109,3 +201,35 @@ class TestShow:
         result = invoke("show", str(bad))
         assert result.exit_code != 0
         assert "not valid JSON" in result.output
+
+    def test_complete_job_id_renders_report(self):
+        record = submit_job()
+        jobs.finalize(
+            record["job_id"],
+            result={
+                "problem": "6*7?",
+                "answer": "42",
+                "margin": "1/1",
+                "votes": {"42": 1.0},
+                "samples": [{"boxed": "42", "text": "the reasoning"}],
+            },
+        )
+        result = invoke("show", record["job_id"])
+        assert result.exit_code == 0, result.output
+        assert "answer: 42" in result.output
+        sample = invoke("show", record["job_id"], "--sample", "0")
+        assert "the reasoning" in sample.output
+
+    def test_running_job_id_is_a_polite_error(self):
+        record = submit_job()
+        result = invoke("show", record["job_id"])
+        assert result.exit_code != 0
+        assert "still running" in result.output
+        assert f"mathx status {record['job_id']}" in result.output
+
+    def test_errored_job_id_shows_error(self):
+        record = submit_job()
+        jobs.fail(record["job_id"], error="kaboom")
+        result = invoke("show", record["job_id"])
+        assert result.exit_code != 0
+        assert "kaboom" in result.output

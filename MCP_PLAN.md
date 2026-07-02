@@ -1,4 +1,10 @@
-# MCP server plan (deferred)
+# MCP server plan (built — see decision log)
+
+> **Status 2026-07-03:** built as ROADMAP Stage 2 — `mathx mcp-serve` (stdio), tools
+> `submit_solve` / `check_solve` in [`src/mathx/mcp_server.py`](src/mathx/mcp_server.py), job
+> store in [`src/mathx/jobs.py`](src/mathx/jobs.py). The sections below are the design
+> rationale as written pre-build, kept because the per-client wiring and the handle/poll
+> reasoning still apply; deviations are logged at the bottom.
 
 mathx currently exposes itself as a CLI plus an agentskills.io SKILL.md (installable into
 several skill-reading dirs — `~/.agents/skills/`, `~/.claude/skills/`, `~/.pi/agent/skills/`,
@@ -261,3 +267,20 @@ as Cursor.
   above is now the skills CLI's concern, not ours. Also moved the canonical SKILL.md out of the
   Claude-specific `.claude/skills/` to an agent-neutral top-level `skills/` (still a `npx skills`
   discovery location); `.claude/` now holds only local dev settings.
+- **2026-07-03** — Built, as ROADMAP Stage 2 (the "persistent job store" pivot pulled it
+  forward — the store is the substrate for every later surface, and MCP is just one reader of
+  it). Deviations from the sketch above:
+  - **Worker is (b) — a detached subprocess — not (a).** The plan leaned coroutine-in-server,
+    but Stage 2 also added CLI verbs (`mathx submit`/`status`/`jobs`), and a CLI `submit`
+    *requires* a worker that outlives the submitting process. Once
+    `python -m mathx.jobs <job_id>` existed, reusing it from the MCP server meant one code
+    path, no in-server task bookkeeping, and jobs that survive an MCP-server bounce for free.
+    (a)'s claimed pros (no subprocess overhead, cancellable) don't matter at fan-out
+    timescales.
+  - **No TTL pass on server start; pruning is manual** (`mathx jobs --prune HOURS`). The
+    roadmap's framing — "runs get identity and history" — makes auto-deleting history wrong.
+  - **API key never touches the job file.** Workers resolve `MATHX_API_KEY`/`OPENAI_API_KEY`
+    from their environment at run time; `mathx submit --api-key …` passes an explicit key via
+    the child's env only.
+  - `submit_solve` also grew `max_k` (weak-margin auto-escalation, added in Stage 1 after this
+    plan was written).

@@ -1,4 +1,4 @@
-"""mathx CLI: ``mathx solve …``, ``mathx show …``, ``mathx doctor``."""
+"""mathx CLI: ``solve``/``submit``/``status``/``jobs``/``show``/``doctor``/``mcp-serve``."""
 from __future__ import annotations
 
 import asyncio
@@ -10,10 +10,60 @@ from pathlib import Path
 
 import click
 
+from mathx import jobs
 from mathx.engine import Sample, result_to_dict, solve
 from mathx.report import render_report, render_sample
 
 STRATEGIES = ["cot", "maj@k", "self_verify"]
+
+# Options shared by `solve` (foreground) and `submit` (background).
+_PROVIDER_OPTIONS = [
+    click.option(
+        "--strategy",
+        type=click.Choice(STRATEGIES),
+        default="maj@k",
+        show_default=True,
+    ),
+    click.option("--k", type=int, default=16, show_default=True),
+    click.option(
+        "--model",
+        required=True,
+        envvar="MATHX_MODEL",
+        help='e.g. "deepseek/deepseek-v4-pro"; or set $MATHX_MODEL',
+    ),
+    click.option(
+        "--base-url",
+        required=True,
+        envvar="MATHX_BASE_URL",
+        help='e.g. "https://api.featherless.ai/v1"; or set $MATHX_BASE_URL',
+    ),
+    click.option(
+        "--api-key",
+        required=True,
+        envvar=("MATHX_API_KEY", "OPENAI_API_KEY"),
+        help="API key; or set $MATHX_API_KEY (preferred) or $OPENAI_API_KEY",
+    ),
+    click.option(
+        "--temperature",
+        type=float,
+        default=None,
+        help="default: 0.0 for cot, 0.7 otherwise",
+    ),
+    click.option("--max-tokens", type=int, default=16000, show_default=True),
+    click.option(
+        "--max-k",
+        type=int,
+        default=None,
+        help="auto-escalate: while the winner holds no strict majority of the vote, "
+        "double k and re-vote, up to this many samples total",
+    ),
+]
+
+
+def provider_options(f):
+    for option in reversed(_PROVIDER_OPTIONS):
+        f = option(f)
+    return f
 
 
 @click.group()
@@ -24,45 +74,7 @@ def cli() -> None:
 
 @cli.command(name="solve")
 @click.argument("problem")
-@click.option(
-    "--strategy",
-    type=click.Choice(STRATEGIES),
-    default="maj@k",
-    show_default=True,
-)
-@click.option("--k", type=int, default=16, show_default=True)
-@click.option(
-    "--model",
-    required=True,
-    envvar="MATHX_MODEL",
-    help='e.g. "deepseek/deepseek-v4-pro"; or set $MATHX_MODEL',
-)
-@click.option(
-    "--base-url",
-    required=True,
-    envvar="MATHX_BASE_URL",
-    help='e.g. "https://api.featherless.ai/v1"; or set $MATHX_BASE_URL',
-)
-@click.option(
-    "--api-key",
-    required=True,
-    envvar=("MATHX_API_KEY", "OPENAI_API_KEY"),
-    help="API key; or set $MATHX_API_KEY (preferred) or $OPENAI_API_KEY",
-)
-@click.option(
-    "--temperature",
-    type=float,
-    default=None,
-    help="default: 0.0 for cot, 0.7 otherwise",
-)
-@click.option("--max-tokens", type=int, default=16000, show_default=True)
-@click.option(
-    "--max-k",
-    type=int,
-    default=None,
-    help="auto-escalate: while the winner holds no strict majority of the vote, "
-    "double k and re-vote, up to this many samples total",
-)
+@provider_options
 @click.option(
     "--progress/--no-progress",
     default=None,
@@ -148,10 +160,113 @@ def solve_cmd(
         sys.exit(1)
 
 
-@cli.command(name="show")
-@click.argument(
-    "run_json", type=click.Path(exists=True, dir_okay=False, path_type=Path)
+@cli.command(name="submit")
+@click.argument("problem")
+@provider_options
+def submit_cmd(
+    problem: str,
+    strategy: str,
+    k: int,
+    model: str,
+    base_url: str,
+    api_key: str,
+    temperature: float | None,
+    max_tokens: int,
+    max_k: int | None,
+) -> None:
+    """Dispatch a solve in the background; print the job id and return at once.
+
+    The fan-out runs in a detached worker that outlives this command. Poll with
+    `mathx status <job_id>`; when complete, `mathx show <job_id>` renders it.
+    """
+    record = jobs.submit(
+        problem,
+        strategy=strategy,
+        k=k,
+        model=model,
+        base_url=base_url,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        max_k=max_k,
+    )
+    jobs.spawn_worker(record["job_id"], api_key=api_key)
+    click.echo(record["job_id"])
+    click.echo(
+        f"poll: mathx status {record['job_id']}   report when done: mathx show {record['job_id']}",
+        err=True,
+    )
+
+
+@cli.command(name="status")
+@click.argument("job_id")
+@click.option("--json", "as_json", is_flag=True, help="print the raw job record")
+def status_cmd(job_id: str, as_json: bool) -> None:
+    """Check a background job. Exit code: 0 complete, 2 still running, 3 job errored."""
+    try:
+        record = jobs.check(job_id)
+    except KeyError as e:
+        raise click.ClickException(str(e)) from e
+    if as_json:
+        click.echo(json.dumps(record, indent=2))
+    status = record.get("status")
+    if status == "running":
+        if not as_json:
+            click.echo(f"job {job_id}: running   elapsed: {record.get('elapsed_ms', 0) / 1000:.0f} s")
+            click.echo(f"problem: {record['args']['problem']}")
+        sys.exit(2)
+    if status == "error":
+        if not as_json:
+            click.echo(f"job {job_id}: error")
+            click.echo(record.get("error", "(no error recorded)"))
+        sys.exit(3)
+    if not as_json:
+        result = record.get("result") or {}
+        click.echo(f"job {job_id}: complete")
+        click.echo(
+            f"answer: {result.get('answer')}   margin: {result.get('margin')}   "
+            f"k: {result.get('k')}"
+        )
+        click.echo(f"full report: mathx show {job_id}", err=True)
+
+
+@cli.command(name="jobs")
+@click.option("--json", "as_json", is_flag=True, help="print raw job records")
+@click.option(
+    "--prune",
+    type=float,
+    default=None,
+    metavar="HOURS",
+    help="first delete records older than HOURS (by finish time; by start time "
+    "for never-finished orphans)",
 )
+def jobs_cmd(as_json: bool, prune: float | None) -> None:
+    """List background jobs, newest first."""
+    if prune is not None:
+        click.echo(f"pruned {jobs.prune(hours=prune)} job(s)", err=True)
+    records = jobs.list_jobs()
+    if as_json:
+        click.echo(json.dumps(records, indent=2))
+        return
+    if not records:
+        click.echo("no jobs yet (dispatch one with `mathx submit`)")
+        return
+    for r in records:
+        result = r.get("result") or {}
+        if r.get("status") == "complete":
+            outcome = f"{result.get('answer')} ({result.get('margin')})"
+        elif r.get("status") == "error":
+            outcome = (r.get("error") or "")[:40]
+        else:
+            outcome = ""
+        problem = " ".join(str(r.get("args", {}).get("problem", "")).split())
+        if len(problem) > 40:
+            problem = problem[:39] + "…"
+        started = (r.get("started_at") or "")[:19]
+        click.echo(f"{r['job_id']}  {r.get('status', '?'):<8}  {started}  {outcome:<24}  {problem}")
+
+
+@cli.command(name="show")
+@click.argument("run")
 @click.option(
     "--sample",
     "sample_index",
@@ -160,19 +275,45 @@ def solve_cmd(
     metavar="N",
     help="print sample N's full reasoning text instead of the report",
 )
-def show_cmd(run_json: Path, sample_index: int | None) -> None:
-    """Render a run's JSON audit record (written by `mathx solve --out`)."""
+def show_cmd(run: str, sample_index: int | None) -> None:
+    """Render a run's audit record — a JSON file from `mathx solve --out`, or a job id."""
+    path = Path(run)
+    if path.is_file():
+        try:
+            record = json.loads(path.read_text())
+        except json.JSONDecodeError as e:
+            raise click.ClickException(f"{run} is not valid JSON: {e}") from e
+        if not isinstance(record, dict):
+            raise click.ClickException(f"{run} is not a mathx run record")
+    else:
+        try:
+            record = jobs.check(run)
+        except KeyError:
+            raise click.ClickException(f"no such file or job id: {run}") from None
+        if record.get("status") == "running":
+            raise click.ClickException(
+                f"job {run} is still running "
+                f"({record.get('elapsed_ms', 0) / 1000:.0f} s elapsed) — poll with `mathx status {run}`"
+            )
+        if record.get("status") == "error":
+            raise click.ClickException(f"job {run} errored: {record.get('error')}")
+    # a job record wraps the run under "result"; a --out file IS the run
+    run_dict = record.get("result") if "result" in record else record
     try:
-        run = json.loads(run_json.read_text())
-    except json.JSONDecodeError as e:
-        raise click.ClickException(f"{run_json} is not valid JSON: {e}") from e
-    if not isinstance(run, dict):
-        raise click.ClickException(f"{run_json} is not a mathx run record")
-    try:
-        text = render_report(run) if sample_index is None else render_sample(run, sample_index)
+        text = (
+            render_report(run_dict) if sample_index is None else render_sample(run_dict, sample_index)
+        )
     except IndexError as e:
         raise click.ClickException(str(e)) from e
     click.echo(text)
+
+
+@cli.command(name="mcp-serve")
+def mcp_serve_cmd() -> None:
+    """Run the MCP server (stdio): submit_solve / check_solve over the job store."""
+    from mathx.mcp_server import serve
+
+    serve()
 
 
 # The maths-oracle SKILL.md ships in this repo at skills/ (agent-neutral); install it

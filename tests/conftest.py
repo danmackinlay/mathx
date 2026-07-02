@@ -60,6 +60,14 @@ class FakeEndpoint:
         return httpx.Response(200, json=_completion(body["model"], reply))
 
 
+@pytest.fixture(autouse=True)
+def isolated_jobs_dir(tmp_path, monkeypatch):
+    """Point the job store at a per-test directory so tests never touch ~/.cache."""
+    d = tmp_path / "jobs"
+    monkeypatch.setenv("MATHX_JOBS_DIR", str(d))
+    return d
+
+
 @pytest.fixture
 def fake_endpoint(monkeypatch):
     def install(replies: list[str | int], judge: Callable[[str], str] | None = None) -> FakeEndpoint:

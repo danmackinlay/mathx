@@ -41,8 +41,9 @@ Run `mathx doctor` any time to check that `mathx` is on PATH and the skill is in
 the right command if either is missing.
 
 **Other agents.** For tools whose extension model isn't a `SKILL.md` — Open WebUI,
-Claude Desktop — we could add an MCP server (deferred; design in
-[`MCP_PLAN.md`](MCP_PLAN.md)).
+Claude Desktop, Cursor — run the bundled MCP server: `mathx mcp-serve` (stdio). It exposes
+`submit_solve` / `check_solve` (handle/poll, so no client tool-call timeout ever bites);
+per-client wiring snippets are in [`MCP_PLAN.md`](MCP_PLAN.md).
 Qwen-Agent can skip MCP and import `mathx.engine.solve` directly;
 see [`examples/qwen_agent_tool.py`](examples/qwen_agent_tool.py).
 
@@ -57,6 +58,7 @@ see [`examples/qwen_agent_tool.py`](examples/qwen_agent_tool.py).
 | `MATHX_MODEL` | Model name, e.g. `deepseek/deepseek-v4-pro`. |
 | `MATHX_BASE_URL` | OpenAI-compatible endpoint, e.g. `https://api.featherless.ai/v1`. |
 | `MATHX_API_KEY` | Set to whatever provider's key value. (Falls back to `OPENAI_API_KEY`) |
+| `MATHX_JOBS_DIR` | Optional. Where background job records live; defaults to `$XDG_CACHE_HOME/mathx/jobs`, else `~/.cache/mathx/jobs`. |
 
 Set them however you set env vars, or pass
 `--model` / `--base-url` / `--api-key` explicitly.
@@ -71,7 +73,6 @@ while you test.
   Lean-prover surface.
 - Not a TIR sandbox. The calling agent has its own Python.
 - Not a provider registry. One OpenAI-compatible client plus flags.
-- Not an MCP server (yet).
 - Not a benchmark / audition harness.
 - Not a frontend / renderer. mathx encourages the backend to output to `$…$` / `$$…$$` so math should render but this depends on the client you are using.
 
@@ -112,9 +113,20 @@ Two options worth knowing:
   answers with agree/disagree marks (by the same math-verify equivalence the vote used), and a
   disagreement summary. `mathx show <run.json> --sample 3` prints sample 3's full reasoning.
 
-If the agent's harness supports background tool execution (Claude Code's `run_in_background=true`),
-dispatch in the background and poll the `--out` file when the fan-out finishes.
-In a synchronous-only harness, the call just blocks; Maybe this time out?
+For anything long-running, prefer the job verbs over blocking:
+
+```bash
+mathx submit "What is 7^999 mod 1000?" --k 32   # prints a job id, returns immediately
+mathx status <job_id>    # exit 0 complete / 2 running / 3 errored; --json for the record
+mathx jobs               # all runs, newest first; --prune HOURS deletes old records
+mathx show <job_id>      # render a finished job (same reader as for --out files)
+```
+
+`submit` writes a `running` record to the job store (see `MATHX_JOBS_DIR`) and detaches a
+worker that outlives the CLI call; the record flips to `complete`/`error` when the fan-out
+lands. Runs get identity and history: every surface — `status`, `jobs`, `show`, the MCP
+server's `check_solve` — is just a reader of the same files. The API key is never written to
+disk; workers read it from the environment.
 The shipped `SKILL.md` teaches the agent when to dispatch and how to
 interpret the margin; `npx skills add danmackinlay/mathx` wires it into the agent's skills
 directory (see *Install*).
@@ -179,14 +191,16 @@ directory (see *Install*).
 
 ```
 src/mathx/
-  engine.py    sample, judge, cluster-and-vote, solve(); the maths logic
-  report.py    pure renderers over the run JSON (`mathx show`)
-  cli.py       click group with `solve` + `show` + `doctor` subcommands
+  engine.py       sample, judge, cluster-and-vote, solve(); the maths logic
+  report.py       pure renderers over the run JSON (`mathx show`)
+  jobs.py         file-per-job store + detached worker (`python -m mathx.jobs <id>`)
+  mcp_server.py   FastMCP wrapper: submit_solve / check_solve over the job store
+  cli.py          click group: solve, submit, status, jobs, show, doctor, mcp-serve
 skills/maths-oracle/
   SKILL.md     agent-facing trigger phrases + dispatch recipe (any agent via npx skills)
 tests/
   conftest.py  fake OpenAI-compatible endpoint (httpx MockTransport under the real client)
-  test_*.py    engine, report, CLI — `uv run pytest`, no network needed
+  test_*.py    engine, jobs, report, MCP, CLI — `uv run pytest`, no network needed
 ```
 
 The engine is one file by design. Public API: `from mathx import solve` returns a `Result`
@@ -250,10 +264,9 @@ Either use such a model with `--strategy cot --k 1`, or specify higher temperatu
   code template parsing + splice-back. The calling agent already has a Python tool, so adding TIR
   here mostly matters when a specialist model that *only* talks via fenced code (e.g.
   OpenMath-Nemotron, Qwen2.5-Math) enters the rotation.
-- **An MCP server.** Deferred. The portable path for everything that isn't an agentskills.io
-  client (Claude Desktop, Goose, Qwen-Agent, Open WebUI, Cursor, VS Code Copilot). Design,
-  triggers, the handle/poll vs MCP-Tasks reasoning, and per-client wiring snippets are in
-  [`MCP_PLAN.md`](MCP_PLAN.md).
+- **The MCP server** ships: `mathx mcp-serve` (stdio), two tools (`submit_solve` /
+  `check_solve`) over the same job store as the CLI verbs. The handle/poll-vs-MCP-Tasks
+  reasoning and per-client wiring snippets are in [`MCP_PLAN.md`](MCP_PLAN.md).
 
 ## Privacy
 

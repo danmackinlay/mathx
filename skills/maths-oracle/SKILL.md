@@ -10,21 +10,21 @@ Dispatch hard maths to `mathx`, an oracle that samples a problem many times agai
 
 ## How to dispatch
 
-`mathx solve` blocks until the fan-out finishes; for `--k` of 8 or more that can be minutes. The shape:
+The fan-out takes minutes for `--k` of 8 or more, so prefer the non-blocking job verbs:
 
 ```bash
-mathx solve "<problem>" \
-  --strategy maj@k --k 16 \
-  --out /tmp/mathx/<run-id>.json
+mathx submit "<problem>" --strategy maj@k --k 16   # prints a job id, returns immediately
+mathx status <job_id>   # exit 0 complete / 2 still running / 3 errored; --json for the full record
+mathx show <job_id>     # once complete: the human-readable report
 ```
+
+Poll `mathx status` every 20–60 s (or between other work). `mathx jobs` lists every run, newest first, if you lose a job id.
 
 (With `MATHX_MODEL` / `MATHX_BASE_URL` / `MATHX_API_KEY` set, no provider flags are needed. If they aren't set, ask the user.)
 
-This skill assumes the `mathx` CLI is on PATH. If `mathx solve` reports "command not found" — or any call errors before sampling — run `mathx doctor`: it checks the setup and prints the exact install command (`uv tool install …` / `uvx`).
+This skill assumes the `mathx` CLI is on PATH. If any call reports "command not found" — or errors before sampling — run `mathx doctor`: it checks the setup and prints the exact install command (`uv tool install …` / `uvx`).
 
-Pick `<run-id>` as a short slug (e.g. the date + a 4-char nonce) so concurrent dispatches don't collide.
-
-If your harness supports background tool execution, kick the call off in the background and poll `<out>` when it appears — that frees the agent to keep doing other things while the fan-out runs and avoids tripping any tool-call timeout. In Claude Code, pass `run_in_background=true` to the Bash tool. In a synchronous-only harness, just run it and accept the wait.
+`mathx solve "<problem>" --strategy maj@k --k 16 --out /tmp/mathx/<run-id>.json` is the blocking form — same engine, waits for the vote, writes the same JSON. Use it only for small `--k` or when you'd rather block than poll (e.g. your harness backgrounds the call itself).
 
 Strategy guidance:
 

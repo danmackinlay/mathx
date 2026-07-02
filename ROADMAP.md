@@ -35,8 +35,8 @@ Honesty constraint: verdicts are evidence, not certainty. The display must carry
 - `mathx show <run.json>`: vote histogram, margin, per-sample answers, disagreement surfacing (`src/mathx/report.py`).
 - Live progress during solve (`--progress`, on by default on a TTY); auto-escalation on weak margin via `--max-k` (no strict majority → double k, re-vote over all samples, repeat up to the cap).
 
-**Stage 2 — job store + async handles** (implement [MCP_PLAN.md](MCP_PLAN.md))
-- File-per-job store → `submit`/`status`/`jobs` CLI verbs; MCP server (`submit_solve`/`check_solve`). Runs get identity and history — the substrate every later surface reads.
+**Stage 2 — job store + async handles** (implement [MCP_PLAN.md](MCP_PLAN.md)) — ✅ done
+- File-per-job store (`src/mathx/jobs.py`, `$MATHX_JOBS_DIR` / `~/.cache/mathx/jobs`) → `submit`/`status`/`jobs` CLI verbs; MCP server `mathx mcp-serve` (`submit_solve`/`check_solve`, `src/mathx/mcp_server.py`). Both submit paths detach the same worker (`python -m mathx.jobs <id>`), so jobs survive their submitter. Runs get identity and history — the substrate every later surface reads.
 
 **Stage 3 — claim-checker primitive**
 - `mathx check "<claim>"`: TIR verdict via SymPy (symbolic equivalence, random-instance testing) + fan-out self-grading. Small new engine strategy; reuses math_verify. This is the atom of the harness.
