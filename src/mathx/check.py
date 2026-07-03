@@ -35,6 +35,8 @@ CHECKER_SYSTEM = (
     "to zero, exact solving).\n"
     "- Where symbolic checking is infeasible, test the claim on many randomly sampled "
     "instances (use a fixed seed) and on edge cases.\n"
+    "- Use ONLY the Python standard library, sympy, and mpmath (ships with sympy) — "
+    "assume numpy/scipy are NOT installed.\n"
     "- Do not use the network and do not read or write files.\n"
     "- The LAST line the script prints must be exactly one of:\n"
     "  VERDICT: PASS\n"
