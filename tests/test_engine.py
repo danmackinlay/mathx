@@ -79,19 +79,26 @@ class TestClusterAndVote:
         assert votes == {"0.5": 2.0}
 
     def test_latex_cosmetics_cluster_together(self):
-        # regression from the live e2e: bare formula strings need $-wrapped
-        # parsing or every typographic variant becomes a singleton cluster
+        # regressions from the live e2e runs: bare formula strings need
+        # $-wrapped parsing (else every typographic variant is a singleton),
+        # and bare \log must normalize to \ln (the LaTeX parser reads \log as
+        # base-10, so log-vs-ln spellings systematically refused to unify)
         variants = [
             r"\log\frac{s_{2}}{s_{1}} + \frac{s_{1}^{2} + (\mu_{1} - \mu_{2})^{2}}{2\,s_{2}^{2}} - \frac{1}{2}",
             r"\log\!\left(\frac{s_2}{s_1}\right) + \frac{s_1^2 + (\mu_1-\mu_2)^2}{2 s_2^2} - \frac12",
+            r"\ln\frac{s_2}{s_1} + \frac{(\mu_1 - \mu_2)^2 + s_1^2}{2 s_2^2} - \frac{1}{2}",
+            r"\frac{(\mu_1 - \mu_2)^2 + s_1^2 - s_2^2}{2s_2^2} + \ln\left(\frac{s_2}{s_1}\right)",
         ]
-        # a documented limit: math-verify does NOT unify everything — the \ln +
-        # reordered-numerator variant stays a singleton (honest split, not a bug)
-        holdout = r"\ln\frac{s_2}{s_1} + \frac{(\mu_1 - \mu_2)^2 + s_1^2}{2 s_2^2} - \frac{1}{2}"
-        winner, margin, votes = _cluster_and_vote([_voted(v) for v in [*variants, holdout]])
-        assert margin == "2/3"
+        winner, margin, votes = _cluster_and_vote([_voted(v) for v in variants])
+        assert margin == "4/4"
         assert winner == variants[0]
-        assert len(votes) == 2
+        assert len(votes) == 1
+
+    def test_explicit_log_base_is_preserved(self):
+        # \log_2 must NOT be treated as \ln: entropy answers care about the base
+        samples = [_voted(r"\log_2(8)"), _voted(r"\ln(8)")]
+        _, margin, votes = _cluster_and_vote(samples)
+        assert len(votes) == 2  # 3 bits vs ln 8: genuinely different
 
     def test_confidence_weights_beat_counts(self):
         samples = [_voted("41", 0.1), _voted("41", 0.1), _voted("42", 0.9)]

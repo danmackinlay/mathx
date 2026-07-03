@@ -84,11 +84,21 @@ def concurrency_cap() -> int | None:
     return n if n > 0 else None
 
 
+_BARE_LOG = re.compile(r"\\log(?!_)")
+
+
 def parse_answer(answer: str):
     """math-verify parse, $-wrapped first: the LaTeX extractor only engages on
     delimited maths, and bare formula strings otherwise parse to nothing (live
     e2e finding — every cluster became a singleton). Falls back to a raw parse
-    for plain numerics."""
+    for plain numerics.
+
+    Bare ``\\log`` is normalized to ``\\ln`` first: the LaTeX parser reads
+    ``\\log`` as base-10, so log-vs-ln spellings of the same formula would
+    systematically refuse to unify (live cloud e2e: two 4-vote clusters of the
+    same expression). Mathematical convention treats bare ``\\log`` as natural;
+    explicit bases (``\\log_2``) are untouched."""
+    answer = _BARE_LOG.sub(r"\\ln", answer)
     try:
         hits = parse(f"${answer}$")
     except Exception:
