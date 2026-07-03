@@ -32,7 +32,7 @@ the canonical fumble, and one model sample is exactly as trustworthy as your mem
 
 ```bash
 # 1. fan out and vote on the closed form
-mathx solve "Give the closed form of KL(N(mu1, s1^2) || N(mu2, s2^2)), the KL divergence between two univariate normal distributions, in terms of mu1, mu2, s1, s2." \
+mathx solve "State the closed form of KL(N(mu1, s1^2) || N(mu2, s2^2)), the KL divergence between two univariate normal distributions. Answer with a single expression in mu1, mu2, s1, s2 only." \
   --k 16 --max-k 32 --out kl.json
 
 # 2. read the vote
@@ -42,8 +42,11 @@ mathx show kl.json
 **What you should see:** the winning cluster is
 $\ln(s_2/s_1) + \frac{s_1^2 + (\mu_1-\mu_2)^2}{2 s_2^2} - \frac{1}{2}$.
 The vote is over *meanings*, not strings — math-verify clusters algebraically equivalent
-formulae. Where it can't unify two parameterizations, the split is honest: read the margin,
-peek at a dissenting sample with `--sample N`.
+formulae. That is also why the problem statement demands "a single expression": if samples
+box the whole identity ("KL(…) = …"), every notation for the left-hand side becomes its own
+cluster and a real consensus reads as a fragmented vote. Ask for canonical form; when a
+margin looks absurdly split, inspect the clusters with `mathx show` before distrusting the
+answer.
 
 ```bash
 # 3. promote the winner to a CHECKED claim — the oracle becomes the inner call

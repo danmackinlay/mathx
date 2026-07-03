@@ -31,8 +31,25 @@ class TestExtractBoxed:
     def test_nested_braces(self):
         assert extract_boxed(r"\boxed{\frac{1}{2}}") == r"\frac{1}{2}"
 
+    def test_deep_nesting_real_formulae(self):
+        # regression: live e2e found formula answers nest 2+ deep, which the
+        # old one-level regex silently dropped (15/16 abstentions)
+        deep = r"\boxed{\log\frac{s_2}{s_1} + \frac{s_1^{2}+(\mu_1-\mu_2)^{2}}{2\,s_2^{2}} - \frac12}"
+        assert extract_boxed(deep) == (
+            r"\log\frac{s_2}{s_1} + \frac{s_1^{2}+(\mu_1-\mu_2)^{2}}{2\,s_2^{2}} - \frac12"
+        )
+        assert extract_boxed(r"\boxed{D_{\text{KL}}(P\|Q) = 3}") == r"D_{\text{KL}}(P\|Q) = 3"
+
+    def test_escaped_braces_are_literal(self):
+        assert extract_boxed(r"\boxed{\{1, 2\}}") == r"\{1, 2\}"
+
+    def test_unterminated_box_falls_back_to_previous(self):
+        assert extract_boxed(r"\boxed{42} then truncated \boxed{\frac{1}{") == "42"
+        assert extract_boxed(r"\boxed{never closed") is None
+
     def test_missing_or_empty(self):
         assert extract_boxed("no box here") is None
+        assert extract_boxed(r"\boxed{}") is None
         assert extract_boxed("") is None
         assert extract_boxed(None) is None
 
@@ -60,6 +77,21 @@ class TestClusterAndVote:
         assert winner == "0.5"
         assert margin == "2/2"
         assert votes == {"0.5": 2.0}
+
+    def test_latex_cosmetics_cluster_together(self):
+        # regression from the live e2e: bare formula strings need $-wrapped
+        # parsing or every typographic variant becomes a singleton cluster
+        variants = [
+            r"\log\frac{s_{2}}{s_{1}} + \frac{s_{1}^{2} + (\mu_{1} - \mu_{2})^{2}}{2\,s_{2}^{2}} - \frac{1}{2}",
+            r"\log\!\left(\frac{s_2}{s_1}\right) + \frac{s_1^2 + (\mu_1-\mu_2)^2}{2 s_2^2} - \frac12",
+        ]
+        # a documented limit: math-verify does NOT unify everything — the \ln +
+        # reordered-numerator variant stays a singleton (honest split, not a bug)
+        holdout = r"\ln\frac{s_2}{s_1} + \frac{(\mu_1 - \mu_2)^2 + s_1^2}{2 s_2^2} - \frac{1}{2}"
+        winner, margin, votes = _cluster_and_vote([_voted(v) for v in [*variants, holdout]])
+        assert margin == "2/3"
+        assert winner == variants[0]
+        assert len(votes) == 2
 
     def test_confidence_weights_beat_counts(self):
         samples = [_voted("41", 0.1), _voted("41", 0.1), _voted("42", 0.9)]
@@ -91,6 +123,8 @@ class TestSolve:
         assert r.tokens_out_total == 4 * 20
         assert len(ep.requests) == 4
         assert ep.requests[0]["temperature"] == 0.7
+        seeds = [req["seed"] for req in ep.requests]
+        assert len(set(seeds)) == 4  # distinct per-sample seeds: no degenerate draws
 
     def test_cot_is_one_sample_at_t0(self, fake_endpoint):
         ep = fake_endpoint([r"\boxed{7}"])
@@ -150,6 +184,17 @@ class TestSolve:
         assert r.k == 4
         assert r.escalations == 1
         assert r.margin == "2/4"
+
+    def test_escalates_on_mass_abstention(self, fake_endpoint):
+        # winner share is 1/1 = 100%, but 3 of 4 samples cast no vote:
+        # quorum rule escalates anyway (regression from the live e2e)
+        round1 = [r"\boxed{42}", "no box", "no box", "no box"]
+        round2 = [r"\boxed{42}"] * 4
+        fake_endpoint(round1 + round2)
+        r = _solve(k=4, max_k=8)
+        assert r.escalations == 1
+        assert r.k == 8
+        assert r.margin == "5/5"
 
     def test_no_escalation_without_any_answer(self, fake_endpoint):
         ep = fake_endpoint(["I am stumped.", "no idea"])

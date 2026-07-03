@@ -9,6 +9,7 @@ Three strategies:
 from __future__ import annotations
 
 import asyncio
+import random
 import re
 import time
 from collections.abc import Callable
@@ -20,12 +21,14 @@ from openai import AsyncOpenAI
 
 Strategy = Literal["cot", "maj@k", "self_verify"]
 
-BOXED = re.compile(r"\\boxed\{((?:[^{}]|\{[^{}]*\})*)\}")
 THINK_BLOCK = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
 
 SYSTEM_PROMPT = (
     "You are a careful mathematician. Solve the problem, then state the final answer.\n"
-    "Wrap the FINAL answer in \\boxed{...}.\n"
+    "Wrap the FINAL answer in \\boxed{...}. Box ONLY the answer itself — a bare value or "
+    "expression, with no restated equation (no 'f(x) =' prefix), no \\displaystyle, and no "
+    "surrounding text. Answers are compared by computer algebra, so a boxed equation that "
+    "merely restates the question splits the vote.\n"
     "For inline maths use $...$ and for display use $$...$$ — never \\(...\\) or \\[...\\]."
 )
 
@@ -64,6 +67,18 @@ class Result:
     elapsed_ms_total: int = 0
 
 
+def parse_answer(answer: str):
+    """math-verify parse, $-wrapped first: the LaTeX extractor only engages on
+    delimited maths, and bare formula strings otherwise parse to nothing (live
+    e2e finding — every cluster became a singleton). Falls back to a raw parse
+    for plain numerics."""
+    try:
+        hits = parse(f"${answer}$")
+    except Exception:
+        hits = []
+    return hits if hits else parse(answer)
+
+
 def _post_think(content: str | None) -> str | None:
     """Strip leading <think>…</think> if the server didn't already.
 
@@ -77,11 +92,35 @@ def _post_think(content: str | None) -> str | None:
 
 
 def extract_boxed(text: str | None) -> str | None:
-    """Return the LAST \\boxed{...} contents in *text* (the final answer)."""
+    """Return the LAST \\boxed{...} contents in *text* (the final answer).
+
+    Brace-matching scan, not a regex: formula answers routinely nest braces
+    two-plus deep (``\\frac{s^{2}}{t}``, ``D_{\\text{KL}}``), which no fixed
+    regex depth survives. ``\\{``/``\\}`` are literal braces and don't count;
+    an unterminated box (truncation) falls back to the previous one.
+    """
     if not text:
         return None
-    hits = BOXED.findall(text)
-    return hits[-1].strip() if hits else None
+    marker = "\\boxed{"
+    idx = text.rfind(marker)
+    while idx != -1:
+        i = idx + len(marker)
+        depth = 1
+        while i < len(text):
+            ch = text[i]
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    inner = text[idx + len(marker): i].strip()
+                    return inner or None
+            i += 1
+        idx = text.rfind(marker, 0, idx)  # unterminated: try an earlier box
+    return None
 
 
 async def _one_sample(
@@ -103,6 +142,10 @@ async def _one_sample(
             ],
             temperature=temperature,
             max_tokens=max_tokens,
+            # distinct per-request seed: some servers (live e2e: vllm-mlx)
+            # otherwise reproduce byte-identical completions for identical
+            # prompts, silently degenerating the fan-out
+            seed=random.randrange(2**31),
         )
         msg = resp.choices[0].message
         text = _post_think(msg.content)
@@ -159,7 +202,7 @@ def _cluster_and_vote(samples: list[Sample]) -> tuple[str | None, str, dict[str,
         placed = False
         for i, (rep, w, members) in enumerate(clusters):
             try:
-                if verify(parse(rep), parse(s.boxed)):
+                if verify(parse_answer(rep), parse_answer(s.boxed)):
                     clusters[i] = (rep, w + weight, [*members, s])
                     placed = True
                     break
@@ -206,10 +249,12 @@ async def solve(
     T defaults to 0.7. Pass an explicit ``temperature`` to override.
 
     ``max_k`` turns on auto-escalation: after voting, if the winner holds no
-    strict majority of the vote weight (a 6/5/5-style split), double the sample
-    count and re-vote over everything drawn so far, until the majority is strict
-    or ``max_k`` samples have been drawn. No winner at all (zero boxed answers)
-    does NOT escalate — that's a setup problem, not a split. Ignored for ``cot``.
+    strict majority of the vote weight (a 6/5/5-style split) OR fewer than half
+    the samples cast a vote (mass abstention — e.g. truncated reasoning), double
+    the sample count and re-vote over everything drawn so far, until both a
+    strict majority and a voter quorum hold or ``max_k`` samples have been
+    drawn. No winner at all (zero boxed answers) does NOT escalate — that's a
+    setup problem, not a split. Ignored for ``cot``.
 
     Progress hooks (both optional, called from the event loop):
     ``on_sample(sample, done, planned)`` after each sample lands (and, for
@@ -250,7 +295,9 @@ async def solve(
         winner, margin, votes = _cluster_and_vote(samples)
         if max_k is None or strategy == "cot" or winner is None:
             break
-        if _winner_share(winner, votes) > 0.5 or len(samples) >= max_k:
+        n_voters = sum(1 for s in samples if s.boxed is not None)
+        strong = _winner_share(winner, votes) > 0.5 and 2 * n_voters >= len(samples)
+        if strong or len(samples) >= max_k:
             break
         planned = min(len(samples) * 2, max_k)
         escalations += 1

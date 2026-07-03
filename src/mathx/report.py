@@ -7,7 +7,9 @@ the same math-verify primitive the engine votes with.
 """
 from __future__ import annotations
 
-from math_verify import parse, verify
+from math_verify import verify
+
+from mathx.engine import parse_answer
 
 BAR_WIDTH = 24
 
@@ -16,7 +18,7 @@ def _equiv(a: str, b: str) -> bool:
     if a == b:
         return True
     try:
-        return bool(verify(parse(a), parse(b)))
+        return bool(verify(parse_answer(a), parse_answer(b)))
     except Exception:
         return False
 
