@@ -43,10 +43,12 @@ mathx show kl.json
 $\ln(s_2/s_1) + \frac{s_1^2 + (\mu_1-\mu_2)^2}{2 s_2^2} - \frac{1}{2}$.
 The vote is over *meanings*, not strings — math-verify clusters algebraically equivalent
 formulae. That is also why the problem statement demands "a single expression": if samples
-box the whole identity ("KL(…) = …"), every notation for the left-hand side becomes its own
-cluster and a real consensus reads as a fragmented vote. Ask for canonical form; when a
-margin looks absurdly split, inspect the clusters with `mathx show` before distrusting the
-answer.
+wrap the answer in a restatement of the question ("KL(…) = …"), every notation for that
+left-hand side becomes its own cluster and a real consensus reads as a fragmented vote. The
+general rule is to pin the answer *form* in the problem statement — equations are fine
+answers when the problem genuinely asks for an identity or relation ("state the recurrence…")
+and the CAS compares them as equations. When a margin looks absurdly split, inspect the
+clusters with `mathx show` before distrusting the answer.
 
 ```bash
 # 3. promote the winner to a CHECKED claim — the oracle becomes the inner call

@@ -465,9 +465,12 @@ def jobs_cmd(as_json: bool, prune: float | None) -> None:
             else:
                 outcome = f"{result.get('answer')} ({result.get('margin')})"
         elif r.get("status") == "error":
-            outcome = (r.get("error") or "")[:40]
+            outcome = r.get("error") or ""
         else:
             outcome = ""
+        outcome = " ".join(outcome.split())
+        if len(outcome) > 24:
+            outcome = outcome[:23] + "…"
         args = r.get("args", {})
         subject = " ".join(str(args.get("problem") or args.get("claim") or "").split())
         if len(subject) > 40:

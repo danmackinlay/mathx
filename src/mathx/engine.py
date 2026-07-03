@@ -25,10 +25,12 @@ THINK_BLOCK = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
 
 SYSTEM_PROMPT = (
     "You are a careful mathematician. Solve the problem, then state the final answer.\n"
-    "Wrap the FINAL answer in \\boxed{...}. Box ONLY the answer itself — a bare value or "
-    "expression, with no restated equation (no 'f(x) =' prefix), no \\displaystyle, and no "
-    "surrounding text. Answers are compared by computer algebra, so a boxed equation that "
-    "merely restates the question splits the vote.\n"
+    "Wrap the FINAL answer in \\boxed{...}. Box exactly the form the problem asks for — a "
+    "value, an expression, or (if an identity/equation/relation is requested) an equation. "
+    "Do NOT wrap the answer in a restatement of the question (no 'KL(...) = ' prefix around "
+    "an expression answer), and use no \\displaystyle and no surrounding prose in the box: "
+    "answers are compared by computer algebra, and notation it cannot interpret splits the "
+    "vote.\n"
     "For inline maths use $...$ and for display use $$...$$ — never \\(...\\) or \\[...\\]."
 )
 
