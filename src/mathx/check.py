@@ -123,25 +123,43 @@ def parse_script_verdict(res: ExecResult) -> tuple[str, str | None]:
     return "error", "script printed no VERDICT line"
 
 
-def _tally_grades(samples: list[Sample]) -> tuple[str, str, int, int, int]:
-    """(verdict, margin, true, false, abstain) from grader samples."""
-    n_true = n_false = abstain = 0
+_TEXT_WRAPPER = re.compile(r"\\(?:text|mathrm|mathbf|textbf|textsc|textit)\s*\{([^{}]*)\}")
+
+
+def _normalize_grade(boxed: str | None) -> str:
+    """TRUE/FALSE/UNDECIDED from a grader's boxed answer, tolerating LaTeX
+    wrappers (live e2e: a grader answered ``\\text{FALSE}`` and went uncounted)."""
+    s = boxed or ""
+    for _ in range(3):  # wrappers can nest a little
+        s = _TEXT_WRAPPER.sub(r"\1", s)
+    return re.sub(r"[^A-Za-z]", "", s).upper()
+
+
+def _tally_grades(samples: list[Sample]) -> tuple[str, str, int, int, int, int]:
+    """(verdict, margin, true, false, abstain, errors) from grader samples.
+
+    Errors (transport/server failures) are counted apart from genuine
+    abstentions — four 503s and an UNDECIDED are different facts."""
+    n_true = n_false = abstain = errors = 0
     for s in samples:
-        boxed = (s.boxed or "").strip().upper()
-        if boxed == "TRUE":
+        if s.error is not None:
+            errors += 1
+            continue
+        word = _normalize_grade(s.boxed)
+        if word == "TRUE":
             n_true += 1
-        elif boxed == "FALSE":
+        elif word == "FALSE":
             n_false += 1
         else:
             abstain += 1
     voters = n_true + n_false
     if voters == 0:
-        return "none", "0/0", n_true, n_false, abstain
+        return "none", "0/0", n_true, n_false, abstain, errors
     if n_true == n_false:
         verdict = "split"
     else:
         verdict = "true" if n_true > n_false else "false"
-    return verdict, f"{max(n_true, n_false)}/{voters}", n_true, n_false, abstain
+    return verdict, f"{max(n_true, n_false)}/{voters}", n_true, n_false, abstain, errors
 
 
 def _aggregate_tir(runs: list[ScriptRun]) -> str | None:
@@ -264,7 +282,7 @@ async def check(
 
     tir_agg = _aggregate_tir(tir_runs)
     if grade_samples:
-        grade_verdict, grade_margin, *_ = _tally_grades(grade_samples)
+        grade_verdict, grade_margin, *_rest = _tally_grades(grade_samples)
     else:
         grade_verdict = grade_margin = None
     status = _overall_status(tir_agg, grade_verdict)
@@ -291,9 +309,9 @@ async def check(
 
 def check_result_to_dict(r: CheckResult) -> dict:
     """JSON-friendly serialization; code/stdout/reasoning kept as audit trail."""
-    n_true, n_false, abstain = 0, 0, 0
+    n_true, n_false, abstain, errors = 0, 0, 0, 0
     if r.grade_samples:
-        _, _, n_true, n_false, abstain = _tally_grades(r.grade_samples)
+        _, _, n_true, n_false, abstain, errors = _tally_grades(r.grade_samples)
     return {
         "kind": "check",
         "claim": r.claim,
@@ -329,6 +347,7 @@ def check_result_to_dict(r: CheckResult) -> dict:
             "true": n_true,
             "false": n_false,
             "abstain": abstain,
+            "errors": errors,
             "samples": [sample_to_dict(s) for s in r.grade_samples],
         },
     }

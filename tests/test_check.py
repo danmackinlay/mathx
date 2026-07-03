@@ -140,6 +140,25 @@ class TestCheck:
         assert r.status == "supported"
         assert r.tir_runs == []
 
+    def test_grade_tolerates_latex_wrapped_votes(self, fake_endpoint):
+        # live cloud e2e: a grader boxed \text{FALSE} and went uncounted
+        fake_endpoint(by_system={
+            GRADER_SYSTEM: cycler([r"\boxed{\text{FALSE}}", r"\boxed{\mathrm{FALSE}}", r"\boxed{False.}"]),
+        })
+        r = run_check(tir_k=0, grade_k=3)
+        assert r.grade_verdict == "false"
+        assert r.grade_margin == "3/3"
+
+    def test_grade_errors_counted_apart_from_abstentions(self, fake_endpoint):
+        # live cloud e2e: four 503s rendered as "abstain", hiding the real story
+        fake_endpoint([r"\boxed{TRUE}", 400, "no box here"])
+        r = run_check(tir_k=0, grade_k=3)
+        d = check_result_to_dict(r)
+        assert d["grade"]["true"] == 1
+        assert d["grade"]["errors"] == 1
+        assert d["grade"]["abstain"] == 1
+        assert r.grade_margin == "1/1"
+
     def test_grade_split_is_unclear(self, fake_endpoint):
         fake_endpoint(by_system={
             GRADER_SYSTEM: cycler([r"\boxed{TRUE}", r"\boxed{FALSE}"]),

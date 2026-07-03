@@ -173,10 +173,14 @@ def render_check_report(run: dict) -> str:
     grade: dict | None = run.get("grade")
     if grade:
         lines.append("")
-        lines.append(
-            f"grade: {grade.get('verdict')} {grade.get('margin')} — "
+        parts = (
             f"{grade.get('true', 0)} true / {grade.get('false', 0)} false / "
-            f"{grade.get('abstain', 0)} abstain "
+            f"{grade.get('abstain', 0)} abstain"
+        )
+        if grade.get("errors"):
+            parts += f" / {grade['errors']} errored"
+        lines.append(
+            f"grade: {grade.get('verdict')} {grade.get('margin')} — {parts} "
             "(`--sample N` prints a grader's reasoning)"
         )
 
