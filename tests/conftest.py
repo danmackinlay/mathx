@@ -80,9 +80,12 @@ class FakeEndpoint:
 
 @pytest.fixture(autouse=True)
 def isolated_jobs_dir(tmp_path, monkeypatch):
-    """Point the job store at a per-test directory so tests never touch ~/.cache."""
+    """Point the job store at a per-test directory so tests never touch ~/.cache,
+    and keep the developer's own profile/pacing env out of test behavior."""
     d = tmp_path / "jobs"
     monkeypatch.setenv("MATHX_JOBS_DIR", str(d))
+    monkeypatch.delenv("MATHX_PROFILE", raising=False)
+    monkeypatch.delenv("MATHX_CONCURRENCY", raising=False)
     return d
 
 
@@ -111,11 +114,12 @@ def fake_endpoint(monkeypatch):
     ) -> FakeEndpoint:
         ep = FakeEndpoint(replies, judge, by_system)
 
-        def make_client(*, base_url: str, api_key: str) -> AsyncOpenAI:
+        def make_client(*, base_url: str, api_key: str, **client_kwargs) -> AsyncOpenAI:
             return AsyncOpenAI(
                 base_url=base_url,
                 api_key=api_key,
                 http_client=httpx.AsyncClient(transport=httpx.MockTransport(ep.handler)),
+                **client_kwargs,
             )
 
         monkeypatch.setattr(engine, "AsyncOpenAI", make_client)

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 import sys
 import tomllib
@@ -10,7 +11,7 @@ from pathlib import Path
 
 import click
 
-from mathx import jobs, ledger
+from mathx import config, jobs, ledger
 from mathx.argue import argue, expand_claim
 from mathx.check import check, check_result_to_dict
 from mathx.engine import Sample, result_to_dict, solve
@@ -24,25 +25,32 @@ from mathx.report import (
 
 STRATEGIES = ["cot", "maj@k", "self_verify"]
 
-# Options every provider-talking command shares (`solve`, `submit`, `check`).
+# Options every provider-talking command shares (`solve`, `submit`, `check`, …).
+# None of these are click-required or click-envvar: resolve_provider() merges
+# flag > profile > environment so that a profile can't be shadowed by a stale
+# env var, and a flag always wins.
 _ENDPOINT_OPTIONS = [
     click.option(
+        "--profile",
+        default=None,
+        help="named profile from mathx.toml / ~/.config/mathx/config.toml; "
+        "or set $MATHX_PROFILE",
+    ),
+    click.option(
         "--model",
-        required=True,
-        envvar="MATHX_MODEL",
-        help='e.g. "deepseek/deepseek-v4-pro"; or set $MATHX_MODEL',
+        default=None,
+        help='e.g. "deepseek/deepseek-v4-pro"; or profile key, or $MATHX_MODEL',
     ),
     click.option(
         "--base-url",
-        required=True,
-        envvar="MATHX_BASE_URL",
-        help='e.g. "https://api.featherless.ai/v1"; or set $MATHX_BASE_URL',
+        default=None,
+        help='e.g. "https://api.featherless.ai/v1"; or profile key, or $MATHX_BASE_URL',
     ),
     click.option(
         "--api-key",
-        required=True,
-        envvar=("MATHX_API_KEY", "OPENAI_API_KEY"),
-        help="API key; or set $MATHX_API_KEY (preferred) or $OPENAI_API_KEY",
+        default=None,
+        help="API key; or the env var a profile names via api_key_env, "
+        "or $MATHX_API_KEY / $OPENAI_API_KEY",
     ),
     click.option(
         "--temperature",
@@ -50,8 +58,95 @@ _ENDPOINT_OPTIONS = [
         default=None,
         help="default: 0.0 for cot, 0.7 otherwise",
     ),
-    click.option("--max-tokens", type=int, default=16000, show_default=True),
+    click.option(
+        "--max-tokens", type=int, default=None, help="output token cap [default: 16000]"
+    ),
+    click.option(
+        "--top-p", type=float, default=None, help="nucleus sampling (some specialists want it)"
+    ),
+    click.option(
+        "--extra-body",
+        default=None,
+        help='JSON merged verbatim into the request body — the passthrough for '
+        'provider dialects, e.g. \'{"reasoning": {"effort": "high"}}\'',
+    ),
 ]
+
+
+def resolve_provider(
+    *,
+    profile: str | None,
+    model: str | None,
+    base_url: str | None,
+    api_key: str | None,
+    temperature: float | None,
+    max_tokens: int | None,
+    top_p: float | None,
+    extra_body: str | None,
+    meta_model: str | None = None,
+    require: tuple = ("model", "base_url", "api_key"),
+) -> dict:
+    """Merge flags > profile > environment into the provider settings dict.
+
+    ``require`` names the keys that must resolve; ledger verbs relax model and
+    base_url because the ledger itself supplies their fallback."""
+    try:
+        prof = config.resolve_profile(profile)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
+
+    def pick(flag_value, key: str, *env_names: str):
+        if flag_value is not None:
+            return flag_value
+        if key in prof:
+            return prof[key]
+        for env in env_names:
+            if os.environ.get(env):
+                return os.environ[env]
+        return None
+
+    if api_key is None and prof.get("api_key_env"):
+        api_key = os.environ.get(prof["api_key_env"])
+        if not api_key:
+            raise click.ClickException(
+                f"profile names api_key_env={prof['api_key_env']!r} but that "
+                "environment variable is empty"
+            )
+    if api_key is None:
+        api_key = os.environ.get("MATHX_API_KEY") or os.environ.get("OPENAI_API_KEY")
+
+    if extra_body is not None:
+        try:
+            extra = json.loads(extra_body)
+        except json.JSONDecodeError as e:
+            raise click.ClickException(f"--extra-body is not valid JSON: {e}") from e
+    else:
+        extra = prof.get("extra_body")
+
+    resolved = {
+        "model": pick(model, "model", "MATHX_MODEL"),
+        "base_url": pick(base_url, "base_url", "MATHX_BASE_URL"),
+        "api_key": api_key,
+        "temperature": pick(temperature, "temperature"),
+        "max_tokens": pick(max_tokens, "max_tokens") or 16000,
+        "top_p": pick(top_p, "top_p"),
+        "extra_body": extra,
+        "max_retries": prof.get("max_retries"),
+        "meta_model": pick(meta_model, "meta_model"),
+    }
+    # a profile's concurrency reaches this process AND its spawned workers via env
+    if prof.get("concurrency") and not os.environ.get("MATHX_CONCURRENCY"):
+        os.environ["MATHX_CONCURRENCY"] = str(prof["concurrency"])
+
+    hints = {
+        "model": "--model / profile model / $MATHX_MODEL",
+        "base_url": "--base-url / profile base_url / $MATHX_BASE_URL",
+        "api_key": "--api-key / profile api_key_env / $MATHX_API_KEY",
+    }
+    missing = [hints[key] for key in require if not resolved.get(key)]
+    if missing:
+        raise click.ClickException("provider not configured; missing " + "; ".join(missing))
+    return resolved
 
 # Solving-specific options (`solve`, `submit` without --check).
 _SOLVE_OPTIONS = [
@@ -73,6 +168,13 @@ _SOLVE_OPTIONS = [
 
 # Claim-checking options (`check`, `submit --check`).
 _CHECK_OPTIONS = [
+    click.option(
+        "--meta-model",
+        default=None,
+        help="model for META-tasks (checker-script writing; decomposition in "
+        "argue/expand). Maths specialists are routinely bad at these — point "
+        "this at a generalist. Default: --model / profile meta_model",
+    ),
     click.option(
         "--tir-k",
         type=int,
@@ -135,16 +237,23 @@ def solve_cmd(
     problem: str,
     strategy: str,
     k: int,
-    model: str,
-    base_url: str,
-    api_key: str,
+    profile: str | None,
+    model: str | None,
+    base_url: str | None,
+    api_key: str | None,
     temperature: float | None,
-    max_tokens: int,
+    max_tokens: int | None,
+    top_p: float | None,
+    extra_body: str | None,
     max_k: int | None,
     progress: bool | None,
     out: Path | None,
 ) -> None:
     """Fan out k samples and vote on the answer."""
+    p = resolve_provider(
+        profile=profile, model=model, base_url=base_url, api_key=api_key,
+        temperature=temperature, max_tokens=max_tokens, top_p=top_p, extra_body=extra_body,
+    )
     on_sample = on_escalate = None
     show_progress = progress if progress is not None else sys.stderr.isatty()
     if show_progress:
@@ -166,14 +275,17 @@ def solve_cmd(
     result = asyncio.run(
         solve(
             problem,
-            model=model,
-            base_url=base_url,
-            api_key=api_key,
+            model=p["model"],
+            base_url=p["base_url"],
+            api_key=p["api_key"],
             k=k,
             strategy=strategy,  # type: ignore[arg-type]
-            temperature=temperature,
-            max_tokens=max_tokens,
+            temperature=p["temperature"],
+            max_tokens=p["max_tokens"],
             max_k=max_k,
+            top_p=p["top_p"],
+            extra_body=p["extra_body"],
+            max_retries=p["max_retries"],
             on_sample=on_sample,
             on_escalate=on_escalate,
         )
@@ -217,11 +329,15 @@ def solve_cmd(
 )
 def check_cmd(
     claim: str,
-    model: str,
-    base_url: str,
-    api_key: str,
+    profile: str | None,
+    model: str | None,
+    base_url: str | None,
+    api_key: str | None,
     temperature: float | None,
-    max_tokens: int,
+    max_tokens: int | None,
+    top_p: float | None,
+    extra_body: str | None,
+    meta_model: str | None,
     tir_k: int,
     grade_k: int,
     exec_timeout: float,
@@ -233,18 +349,27 @@ def check_cmd(
     it in a local subprocess) and grade (a TRUE/FALSE vote of k samples).
     Exit code: 0 supported, 1 refuted, 2 conflict or unclear.
     """
+    p = resolve_provider(
+        profile=profile, model=model, base_url=base_url, api_key=api_key,
+        temperature=temperature, max_tokens=max_tokens, top_p=top_p,
+        extra_body=extra_body, meta_model=meta_model,
+    )
     try:
         result = asyncio.run(
             check(
                 claim,
-                model=model,
-                base_url=base_url,
-                api_key=api_key,
+                model=p["model"],
+                base_url=p["base_url"],
+                api_key=p["api_key"],
                 tir_k=tir_k,
                 grade_k=grade_k,
-                temperature=temperature,
-                max_tokens=max_tokens,
+                temperature=p["temperature"],
+                max_tokens=p["max_tokens"],
                 exec_timeout_s=exec_timeout,
+                meta_model=p["meta_model"],
+                top_p=p["top_p"],
+                extra_body=p["extra_body"],
+                max_retries=p["max_retries"],
             )
         )
     except ValueError as e:
@@ -290,17 +415,25 @@ def check_cmd(
               help="TRUE/FALSE graders per claim (0 = lane off)")
 @click.option("--exec-timeout", type=float, default=60.0, show_default=True,
               help="seconds each checker script may run")
+@click.option("--meta-model", default=None,
+              help="model for decomposition + checker scripts (the meta-tasks); "
+              "default: --model / profile meta_model. Point a specialist "
+              "profile's meta_model at a generalist.")
 def argue_cmd(
     problem: str,
-    model: str,
-    base_url: str,
-    api_key: str,
+    profile: str | None,
+    model: str | None,
+    base_url: str | None,
+    api_key: str | None,
     temperature: float | None,
-    max_tokens: int,
+    max_tokens: int | None,
+    top_p: float | None,
+    extra_body: str | None,
     rounds: int,
     tir_k: int,
     grade_k: int,
     exec_timeout: float,
+    meta_model: str | None,
 ) -> None:
     """Decompose–check–refine: build an argument with a checked claim ledger.
 
@@ -309,19 +442,28 @@ def argue_cmd(
     --rounds times. Prints the ledger id first, then the assembled ledger.
     Exit code: 0 if every claim ends supported, 2 otherwise.
     """
+    p = resolve_provider(
+        profile=profile, model=model, base_url=base_url, api_key=api_key,
+        temperature=temperature, max_tokens=max_tokens, top_p=top_p,
+        extra_body=extra_body, meta_model=meta_model,
+    )
     try:
         led = asyncio.run(
             argue(
                 problem,
-                model=model,
-                base_url=base_url,
-                api_key=api_key,
+                model=p["model"],
+                base_url=p["base_url"],
+                api_key=p["api_key"],
                 rounds=rounds,
                 tir_k=tir_k,
                 grade_k=grade_k,
-                temperature=temperature,
-                max_tokens=max_tokens,
+                temperature=p["temperature"],
+                max_tokens=p["max_tokens"],
                 exec_timeout_s=exec_timeout,
+                meta_model=p["meta_model"],
+                top_p=p["top_p"],
+                extra_body=p["extra_body"],
+                max_retries=p["max_retries"],
                 on_event=lambda msg: click.echo(msg, err=True),
             )
         )
@@ -349,12 +491,16 @@ def submit_cmd(
     problem: str,
     strategy: str,
     k: int,
-    model: str,
-    base_url: str,
-    api_key: str,
+    profile: str | None,
+    model: str | None,
+    base_url: str | None,
+    api_key: str | None,
     temperature: float | None,
-    max_tokens: int,
+    max_tokens: int | None,
+    top_p: float | None,
+    extra_body: str | None,
     max_k: int | None,
+    meta_model: str | None,
     tir_k: int,
     grade_k: int,
     exec_timeout: float,
@@ -366,31 +512,34 @@ def submit_cmd(
     that outlives this command. Poll with `mathx status <job_id>`; when
     complete, `mathx show <job_id>` renders it.
     """
+    p = resolve_provider(
+        profile=profile, model=model, base_url=base_url, api_key=api_key,
+        temperature=temperature, max_tokens=max_tokens, top_p=top_p,
+        extra_body=extra_body, meta_model=meta_model,
+    )
+    common = {
+        "model": p["model"],
+        "base_url": p["base_url"],
+        "temperature": p["temperature"],
+        "max_tokens": p["max_tokens"],
+        "top_p": p["top_p"],
+        "extra_body": p["extra_body"],
+        "max_retries": p["max_retries"],
+    }
     if as_check:
         args = {
             "claim": problem,
             "tir_k": tir_k,
             "grade_k": grade_k,
             "exec_timeout_s": exec_timeout,
-            "model": model,
-            "base_url": base_url,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
+            "meta_model": p["meta_model"],
+            **common,
         }
         record = jobs.submit(kind="check", args=args)
     else:
-        args = {
-            "problem": problem,
-            "strategy": strategy,
-            "k": k,
-            "model": model,
-            "base_url": base_url,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "max_k": max_k,
-        }
+        args = {"problem": problem, "strategy": strategy, "k": k, "max_k": max_k, **common}
         record = jobs.submit(kind="solve", args=args)
-    jobs.spawn_worker(record["job_id"], api_key=api_key)
+    jobs.spawn_worker(record["job_id"], api_key=p["api_key"])
     click.echo(record["job_id"])
     click.echo(
         f"poll: mathx status {record['job_id']}   report when done: mathx show {record['job_id']}",
@@ -595,15 +744,24 @@ def _load_ledger_claim(ledger_id: str, claim_id: str) -> tuple[dict, dict]:
 @endpoint_options
 @check_options
 def recheck_cmd(
-    ledger_id: str, claim_id: str, model: str, base_url: str, api_key: str,
-    temperature: float | None, max_tokens: int, tir_k: int, grade_k: int, exec_timeout: float,
+    ledger_id: str, claim_id: str, profile: str | None, model: str | None,
+    base_url: str | None, api_key: str | None, temperature: float | None,
+    max_tokens: int | None, top_p: float | None, extra_body: str | None,
+    meta_model: str | None, tir_k: int, grade_k: int, exec_timeout: float,
 ) -> None:
     """Re-check one claim (e.g. at higher --grade-k); badges refresh on next render."""
     led, claim = _load_ledger_claim(ledger_id, claim_id)
+    p = resolve_provider(
+        profile=profile, model=model, base_url=base_url, api_key=api_key,
+        temperature=temperature, max_tokens=max_tokens, top_p=top_p,
+        extra_body=extra_body, meta_model=meta_model, require=("api_key",),
+    )
     job_id = ledger.attach_check(
-        led, claim, api_key=api_key, round_=led["rounds_used"], kind="recheck",
-        model=model, base_url=base_url, tir_k=tir_k, grade_k=grade_k,
-        exec_timeout_s=exec_timeout, temperature=temperature, max_tokens=max_tokens,
+        led, claim, api_key=p["api_key"], round_=led["rounds_used"], kind="recheck",
+        model=p["model"], base_url=p["base_url"], tir_k=tir_k, grade_k=grade_k,
+        exec_timeout_s=exec_timeout, temperature=p["temperature"],
+        max_tokens=p["max_tokens"], meta_model=p["meta_model"], top_p=p["top_p"],
+        extra_body=p["extra_body"], max_retries=p["max_retries"],
     )
     click.echo(job_id)
     click.echo(f"rechecking {claim_id}; render with: mathx show {ledger_id}", err=True)
@@ -616,19 +774,29 @@ def recheck_cmd(
 @endpoint_options
 @check_options
 def challenge_cmd(
-    ledger_id: str, claim_id: str, objection: str, model: str, base_url: str, api_key: str,
-    temperature: float | None, max_tokens: int, tir_k: int, grade_k: int, exec_timeout: float,
+    ledger_id: str, claim_id: str, objection: str, profile: str | None,
+    model: str | None, base_url: str | None, api_key: str | None,
+    temperature: float | None, max_tokens: int | None, top_p: float | None,
+    extra_body: str | None, meta_model: str | None, tir_k: int, grade_k: int,
+    exec_timeout: float,
 ) -> None:
     """Re-check one claim with a specific objection put to the checkers."""
     led, claim = _load_ledger_claim(ledger_id, claim_id)
+    p = resolve_provider(
+        profile=profile, model=model, base_url=base_url, api_key=api_key,
+        temperature=temperature, max_tokens=max_tokens, top_p=top_p,
+        extra_body=extra_body, meta_model=meta_model, require=("api_key",),
+    )
     text = (
         f"{claim['text']}\n\nWhen judging this claim, specifically address the "
         f"following objection: {objection}"
     )
     job_id = ledger.attach_check(
-        led, claim, api_key=api_key, round_=led["rounds_used"], kind="challenge",
-        text_override=text, model=model, base_url=base_url, tir_k=tir_k, grade_k=grade_k,
-        exec_timeout_s=exec_timeout, temperature=temperature, max_tokens=max_tokens,
+        led, claim, api_key=p["api_key"], round_=led["rounds_used"], kind="challenge",
+        text_override=text, model=p["model"], base_url=p["base_url"], tir_k=tir_k,
+        grade_k=grade_k, exec_timeout_s=exec_timeout, temperature=p["temperature"],
+        max_tokens=p["max_tokens"], meta_model=p["meta_model"], top_p=p["top_p"],
+        extra_body=p["extra_body"], max_retries=p["max_retries"],
     )
     click.echo(job_id)
     click.echo(f"challenging {claim_id}; render with: mathx show {ledger_id}", err=True)
@@ -640,17 +808,26 @@ def challenge_cmd(
 @endpoint_options
 @check_options
 def expand_cmd(
-    ledger_id: str, claim_id: str, model: str, base_url: str, api_key: str,
-    temperature: float | None, max_tokens: int, tir_k: int, grade_k: int, exec_timeout: float,
+    ledger_id: str, claim_id: str, profile: str | None, model: str | None,
+    base_url: str | None, api_key: str | None, temperature: float | None,
+    max_tokens: int | None, top_p: float | None, extra_body: str | None,
+    meta_model: str | None, tir_k: int, grade_k: int, exec_timeout: float,
 ) -> None:
     """Decompose one claim into sub-claims and check each of them."""
     led, claim = _load_ledger_claim(ledger_id, claim_id)
+    p = resolve_provider(
+        profile=profile, model=model, base_url=base_url, api_key=api_key,
+        temperature=temperature, max_tokens=max_tokens, top_p=top_p,
+        extra_body=extra_body, meta_model=meta_model, require=("api_key",),
+    )
     try:
         children = asyncio.run(
             expand_claim(
-                led, claim, api_key=api_key, model=model, base_url=base_url,
-                tir_k=tir_k, grade_k=grade_k, temperature=temperature,
-                max_tokens=max_tokens, exec_timeout_s=exec_timeout,
+                led, claim, api_key=p["api_key"], model=p["model"], base_url=p["base_url"],
+                tir_k=tir_k, grade_k=grade_k, temperature=p["temperature"],
+                max_tokens=p["max_tokens"], exec_timeout_s=exec_timeout,
+                meta_model=p["meta_model"], top_p=p["top_p"], extra_body=p["extra_body"],
+                max_retries=p["max_retries"],
             )
         )
     except RuntimeError as e:
@@ -792,6 +969,18 @@ def doctor_cmd() -> None:
             echo("  prefer an isolated install over polluting project deps:")
             echo(f"    uv tool install {GIT_REPO}")
             echo(f"    uvx --from {GIT_REPO} mathx solve …   # ephemeral")
+
+    config_path = config.find_config()
+    if config_path is not None:
+        try:
+            names = sorted(config.load_profiles(config_path))
+            echo(f"✓ config: {config_path} (profiles: {', '.join(names) or 'none'})")
+        except ValueError as e:
+            echo(f"✗ config: {e}")
+    else:
+        echo("• config: no mathx.toml (cwd/ancestors) or ~/.config/mathx/config.toml")
+    if os.environ.get("MATHX_PROFILE"):
+        echo(f"• $MATHX_PROFILE={os.environ['MATHX_PROFILE']}")
 
     skills = _find_skill()
     if skills:

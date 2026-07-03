@@ -6,21 +6,28 @@ errors before sampling.
 
 ## Point at a provider
 
-mathx reads `MATHX_MODEL` / `MATHX_BASE_URL` / `MATHX_API_KEY` (see README). The two usual
-shapes:
+Preferred: define profiles once (see README *Configuration*) and pass `--profile`:
 
-```bash
-# a cloud generalist via OpenRouter
-export MATHX_BASE_URL=https://openrouter.ai/api/v1
-export MATHX_MODEL=deepseek/deepseek-v4-flash
-export MATHX_API_KEY=$OPENROUTER_API_KEY
+```toml
+# mathx.toml
+[profiles.local]                     # a local server (vLLM / vllm-mlx / oMLX)
+base_url = "http://localhost:8000/v1"
+model = "vibethinker-bf16"           # specialist: solves and grades
+meta_model = "qwen3.6-35b"           # generalist: decomposes, writes checker scripts
+temperature = 1.0                    # VibeThinker wants hot sampling
+top_p = 0.95
+max_tokens = 6000
+max_retries = 0
+concurrency = 3                      # match the server's real parallelism
 
-# …or a local server (e.g. VibeThinker-3B on vLLM/oMLX)
-export MATHX_BASE_URL=http://localhost:8000/v1
-export MATHX_MODEL=VibeThinker-3B
-export MATHX_API_KEY=x            # unused, but the slot is required
-# VibeThinker wants hot sampling: add `--temperature 1.0` to the solve/check calls below
+[profiles.cloud]                     # a cloud generalist via OpenRouter
+base_url = "https://openrouter.ai/api/v1"
+model = "deepseek/deepseek-v4-flash"
+api_key_env = "OPENROUTER_API_KEY"
 ```
+
+Bare env vars (`MATHX_MODEL` / `MATHX_BASE_URL` / `MATHX_API_KEY`) also work — add
+`--profile local` or `--profile cloud` to the commands below, or omit it with env vars set.
 
 Cost yardstick: example 1 ≈ 16–48 samples, example 2 ≈ 30–60 (including the argue round) —
 minutes and modest tokens on a cloud endpoint; free but slower locally.
@@ -30,8 +37,10 @@ minutes and modest tokens on a cloud endpoint; free but slower locally.
 - *Match the model to the role.* Reasoning-tuned math specialists are strong solvers and
   graders but can be hopeless at the meta-tasks — writing a checker script or emitting the
   ARGUMENT:/CLAIMS: decomposition (one spiralled for 16k tokens without producing a code
-  fence). Use a generalist for `argue` and the tir lane; use the specialist for `solve` and
-  grading. Models are per-invocation, so mixing is just a `--model` flag.
+  fence). That's what a profile's `meta_model` key is for (as in `[profiles.local]` above):
+  the specialist keeps the solve/grade seats, the generalist gets decomposition and script
+  authorship, and `check`/`argue` route each task automatically. `--meta-model` overrides
+  per call.
 - *Pace the fan-out to the server.* A small local server admits a few concurrent generations
   and lets the rest queue into its request timeout. Set `MATHX_CONCURRENCY` to the server's
   real parallelism and keep `--max-tokens` low enough that one sample fits inside the

@@ -119,6 +119,10 @@ def attach_check(
     exec_timeout_s: float = 60.0,
     temperature: float | None = None,
     max_tokens: int = 16000,
+    meta_model: str | None = None,
+    top_p: float | None = None,
+    extra_body: dict | None = None,
+    max_retries: int | None = None,
     spawn=None,
 ) -> str:
     """Submit a check job for a claim, record the reference, start the worker.
@@ -139,6 +143,10 @@ def attach_check(
             "base_url": base_url or led["base_url"],
             "temperature": temperature,
             "max_tokens": max_tokens,
+            "meta_model": meta_model,
+            "top_p": top_p,
+            "extra_body": extra_body,
+            "max_retries": max_retries,
         },
     )
     claim["verdicts"].append({"job_id": record["job_id"], "round": round_, "kind": kind})

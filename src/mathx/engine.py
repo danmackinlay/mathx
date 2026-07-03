@@ -148,8 +148,17 @@ async def _one_sample(
     temperature: float,
     max_tokens: int,
     system: str = SYSTEM_PROMPT,
+    top_p: float | None = None,
+    extra_body: dict | None = None,
 ) -> Sample:
     t0 = time.monotonic()
+    kwargs: dict = {}
+    if top_p is not None:
+        kwargs["top_p"] = top_p
+    if extra_body:
+        # provider-dialect passthrough (reasoning effort, thinking toggles, …):
+        # mathx models none of it, the endpoint gets it verbatim
+        kwargs["extra_body"] = extra_body
     try:
         resp = await client.chat.completions.create(
             model=model,
@@ -163,6 +172,7 @@ async def _one_sample(
             # otherwise reproduce byte-identical completions for identical
             # prompts, silently degenerating the fan-out
             seed=random.randrange(2**31),
+            **kwargs,
         )
         msg = resp.choices[0].message
         text = _post_think(msg.content)
@@ -261,6 +271,9 @@ async def solve(
     temperature: float | None = None,
     max_tokens: int = 16000,
     max_k: int | None = None,
+    top_p: float | None = None,
+    extra_body: dict | None = None,
+    max_retries: int | None = None,
     on_sample: Callable[[Sample, int, int], None] | None = None,
     on_escalate: Callable[[str, int], None] | None = None,
 ) -> Result:
@@ -283,7 +296,12 @@ async def solve(
     margin triggers another round.
     """
     t0 = time.monotonic()
-    client = AsyncOpenAI(base_url=base_url, api_key=api_key)
+    client_kwargs: dict = {"base_url": base_url, "api_key": api_key}
+    if max_retries is not None:
+        # SDK default (2) suits cloud endpoints; 0 suits a single-user local
+        # server, where retrying a doomed long generation only amplifies load
+        client_kwargs["max_retries"] = max_retries
+    client = AsyncOpenAI(**client_kwargs)
 
     if strategy == "cot":
         kk, temp = 1, (0.0 if temperature is None else temperature)
@@ -304,7 +322,10 @@ async def solve(
         if sem is not None:
             await sem.acquire()
         try:
-            s = await _one_sample(client, model, problem, temperature=temp, max_tokens=max_tokens)
+            s = await _one_sample(
+                client, model, problem, temperature=temp, max_tokens=max_tokens,
+                top_p=top_p, extra_body=extra_body,
+            )
             if strategy == "self_verify":
                 if s.text is None or s.boxed is None:
                     s.confidence = 0.0

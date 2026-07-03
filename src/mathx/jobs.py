@@ -170,6 +170,10 @@ async def run_job(job_id: str) -> dict:
                 temperature=args.get("temperature"),
                 max_tokens=args.get("max_tokens", 16000),
                 exec_timeout_s=args.get("exec_timeout_s", 60.0),
+                meta_model=args.get("meta_model"),
+                top_p=args.get("top_p"),
+                extra_body=args.get("extra_body"),
+                max_retries=args.get("max_retries"),
             )
             payload = check_result_to_dict(result)
         elif kind == "solve":
@@ -183,6 +187,9 @@ async def run_job(job_id: str) -> dict:
                 temperature=args["temperature"],
                 max_tokens=args["max_tokens"],
                 max_k=args["max_k"],
+                top_p=args.get("top_p"),
+                extra_body=args.get("extra_body"),
+                max_retries=args.get("max_retries"),
             )
             payload = result_to_dict(result)
         else:

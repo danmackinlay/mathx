@@ -85,6 +85,7 @@ class CheckResult:
     base_url: str
     tir_k: int
     grade_k: int
+    meta_model: str | None = None  # authored the checker scripts, when != model
     tokens_in_total: int = 0
     tokens_out_total: int = 0
     elapsed_ms_total: int = 0
@@ -200,33 +201,45 @@ async def check(
     max_tokens: int = 16000,
     exec_timeout_s: float = 60.0,
     executor: LocalExecutor | None = None,
+    meta_model: str | None = None,
+    top_p: float | None = None,
+    extra_body: dict | None = None,
+    max_retries: int | None = None,
 ) -> CheckResult:
     """Run the enabled verdict lanes concurrently and aggregate.
 
     Set ``tir_k=0`` or ``grade_k=0`` to switch a lane off (not both).
+    ``meta_model`` (default: ``model``) authors the checker scripts — a
+    meta-task that narrow maths specialists are routinely bad at; grading
+    stays on ``model``, which specialists are good at.
     """
     if tir_k <= 0 and grade_k <= 0:
         raise ValueError("at least one lane must be on: tir_k or grade_k must be > 0")
     t0 = time.monotonic()
-    client = AsyncOpenAI(base_url=base_url, api_key=api_key)
+    client_kwargs: dict = {"base_url": base_url, "api_key": api_key}
+    if max_retries is not None:
+        client_kwargs["max_retries"] = max_retries
+    client = AsyncOpenAI(**client_kwargs)
     executor = executor or get_executor()
     temp = 0.7 if temperature is None else temperature
     prompt = f"Claim:\n{claim}"
     cap = concurrency_cap()
     sem = asyncio.Semaphore(cap) if cap else None
 
-    async def sample(system: str) -> Sample:
+    async def sample(use_model: str, system: str) -> Sample:
         if sem is not None:
             async with sem:
                 return await _one_sample(
-                    client, model, prompt, temperature=temp, max_tokens=max_tokens, system=system
+                    client, use_model, prompt, temperature=temp, max_tokens=max_tokens,
+                    system=system, top_p=top_p, extra_body=extra_body,
                 )
         return await _one_sample(
-            client, model, prompt, temperature=temp, max_tokens=max_tokens, system=system
+            client, use_model, prompt, temperature=temp, max_tokens=max_tokens,
+            system=system, top_p=top_p, extra_body=extra_body,
         )
 
     async def one_tir() -> ScriptRun:
-        gen = await sample(CHECKER_SYSTEM)
+        gen = await sample(meta_model or model, CHECKER_SYSTEM)
         if gen.error is not None:
             return ScriptRun("error", f"generation failed: {gen.error}", None, "", "", None, False, 0, gen)
         code = extract_code(gen.text)
@@ -239,7 +252,7 @@ async def check(
         )
 
     async def one_grade() -> Sample:
-        return await sample(GRADER_SYSTEM)
+        return await sample(model, GRADER_SYSTEM)
 
     tir_runs, grade_samples = await asyncio.gather(
         asyncio.gather(*[one_tir() for _ in range(max(0, tir_k))]),
@@ -267,6 +280,7 @@ async def check(
         base_url=base_url,
         tir_k=max(0, tir_k),
         grade_k=max(0, grade_k),
+        meta_model=meta_model if meta_model and meta_model != model else None,
         tokens_in_total=sum(s.tokens_in for s in all_samples),
         tokens_out_total=sum(s.tokens_out for s in all_samples),
         elapsed_ms_total=int((time.monotonic() - t0) * 1000),
@@ -284,6 +298,7 @@ def check_result_to_dict(r: CheckResult) -> dict:
         "status": r.status,
         "summary": r.summary,
         "model": r.model,
+        "meta_model": r.meta_model,
         "base_url": r.base_url,
         "tir_k": r.tir_k,
         "grade_k": r.grade_k,

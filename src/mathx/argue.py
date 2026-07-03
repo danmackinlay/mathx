@@ -139,20 +139,32 @@ async def argue(
     max_tokens: int = 16000,
     exec_timeout_s: float = 60.0,
     poll_s: float = 2.0,
+    meta_model: str | None = None,
+    top_p: float | None = None,
+    extra_body: dict | None = None,
+    max_retries: int | None = None,
     spawn=None,
     on_event: Callable[[str], None] | None = None,
 ) -> dict:
     """Run the loop; return the assembled ledger record.
 
-    ``rounds`` = max refine cycles after the initial decomposition. ``spawn``
-    overrides how check workers start (tests run them in-process).
+    ``rounds`` = max refine cycles after the initial decomposition.
+    ``meta_model`` (default: ``model``) does the meta-tasks — decomposition
+    here, checker-script authorship inside each check job — so a narrow
+    specialist can keep the grading seat without being handed jobs it is bad
+    at. ``spawn`` overrides how check workers start (tests run them
+    in-process).
     """
     emit = on_event or (lambda _msg: None)
-    client = AsyncOpenAI(base_url=base_url, api_key=api_key)
+    client_kwargs: dict = {"base_url": base_url, "api_key": api_key}
+    if max_retries is not None:
+        client_kwargs["max_retries"] = max_retries
+    client = AsyncOpenAI(**client_kwargs)
     temp = 0.7 if temperature is None else temperature
     check_kwargs = dict(
         api_key=api_key, tir_k=tir_k, grade_k=grade_k, exec_timeout_s=exec_timeout_s,
-        temperature=temperature, max_tokens=max_tokens, spawn=spawn,
+        temperature=temperature, max_tokens=max_tokens, meta_model=meta_model,
+        top_p=top_p, extra_body=extra_body, max_retries=max_retries, spawn=spawn,
     )
 
     led = ledger.create(problem, model=model, base_url=base_url, rounds_max=rounds)
@@ -171,8 +183,8 @@ async def argue(
         led["rounds_used"] = rnd
         emit(f"round {rnd}: {'decomposing' if rnd == 0 else 'refining'}…")
         argument, texts = await _decompose(
-            client, model, user, temperature=temp, max_tokens=max_tokens, emit=emit,
-            transcript=led["decompositions"],
+            client, meta_model or model, user, temperature=temp, max_tokens=max_tokens,
+            emit=emit, transcript=led["decompositions"],
         )
         led["argument"] = argument
 
@@ -251,16 +263,24 @@ async def expand_claim(
     temperature: float | None = None,
     max_tokens: int = 16000,
     exec_timeout_s: float = 60.0,
+    meta_model: str | None = None,
+    top_p: float | None = None,
+    extra_body: dict | None = None,
+    max_retries: int | None = None,
     spawn=None,
 ) -> list[dict]:
     """Decompose one claim into checked sub-claims (``mathx ledger expand``).
 
     model/base_url default to the ledger's; overriding is legitimate regime
-    mixing (e.g. expand with a stronger generalist).
+    mixing. The sub-decomposition itself runs on ``meta_model`` (default:
+    the resolved model) — it's a meta-task.
     """
     model = model or led["model"]
     base_url = base_url or led["base_url"]
-    client = AsyncOpenAI(base_url=base_url, api_key=api_key)
+    client_kwargs: dict = {"base_url": base_url, "api_key": api_key}
+    if max_retries is not None:
+        client_kwargs["max_retries"] = max_retries
+    client = AsyncOpenAI(**client_kwargs)
     temp = 0.7 if temperature is None else temperature
     user = (
         "Decompose the following claim into 2–5 sub-claims that together imply it. "
@@ -268,7 +288,8 @@ async def expand_claim(
         f"Claim:\n{claim['text']}"
     )
     _, texts = await _decompose(
-        client, model, user, temperature=temp, max_tokens=max_tokens, emit=lambda _m: None
+        client, meta_model or model, user, temperature=temp, max_tokens=max_tokens,
+        emit=lambda _m: None,
     )
     rnd = led["rounds_used"]
     children = [
@@ -278,6 +299,7 @@ async def expand_claim(
         ledger.attach_check(
             led, child, round_=rnd, api_key=api_key, model=model, base_url=base_url,
             tir_k=tir_k, grade_k=grade_k, exec_timeout_s=exec_timeout_s,
-            temperature=temperature, max_tokens=max_tokens, spawn=spawn,
+            temperature=temperature, max_tokens=max_tokens, meta_model=meta_model,
+            top_p=top_p, extra_body=extra_body, max_retries=max_retries, spawn=spawn,
         )
     return children

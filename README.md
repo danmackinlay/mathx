@@ -47,11 +47,40 @@ per-client wiring snippets are in [`MCP_PLAN.md`](MCP_PLAN.md).
 Qwen-Agent can skip MCP and import `mathx.engine.solve` directly;
 see [`examples/qwen_agent_tool.py`](examples/qwen_agent_tool.py).
 
-## Environment variables
+## Configuration: profiles and environment variables
 
-`mathx solve` needs a provider — a model, an OpenAI-compatible endpoint, and a key. The
-`--model` / `--base-url` / `--api-key` flags default to these vars, so once they're set you call
-`mathx solve "…"` with no flags:
+Every provider-talking command needs a model, an OpenAI-compatible endpoint, and a key, and
+resolves each setting as **flag > profile > environment variable**.
+
+**Profiles** live in `mathx.toml` (working dir or any ancestor) or
+`~/.config/mathx/config.toml`, and bundle the settings that travel together:
+
+```toml
+[profiles.local]
+base_url = "http://localhost:8000/v1"
+model = "vibethinker-bf16"     # object-level maths: solve, grade, judge
+meta_model = "qwen3.6-35b"     # meta-tasks: decomposition, checker scripts
+temperature = 1.0
+top_p = 0.95
+max_tokens = 6000              # keep one sample inside the server's request timeout
+max_retries = 0                # don't re-send doomed requests to a single-user server
+concurrency = 3                # the server's real parallelism
+
+[profiles.cloud]
+base_url = "https://openrouter.ai/api/v1"
+model = "deepseek/deepseek-v4-flash"
+api_key_env = "OPENROUTER_API_KEY"   # NAMES the env var; keys never live in this file
+extra_body = { reasoning = { effort = "high" } }   # provider-dialect passthrough, verbatim
+```
+
+Select with `--profile local` or `MATHX_PROFILE=local`. The `model`/`meta_model` split exists
+because maths specialists are routinely bad at the meta-tasks (writing verification scripts,
+emitting structured decompositions) while being excellent solvers and graders — the profile
+records that division of labour once, so `mathx argue --profile local` can never accidentally
+hand the specialist a job it can't do. `mathx doctor` reports which config file and profiles
+it can see.
+
+**Bare environment variables** still work with no config file at all:
 
 | Var | Purpose |
 |---|---|
@@ -64,7 +93,9 @@ see [`examples/qwen_agent_tool.py`](examples/qwen_agent_tool.py).
 | `MATHX_CONCURRENCY` | Optional. Max in-flight requests per process (and the job-launch budget for `argue`). Unset = unlimited. Set it to a small local server's real parallelism, or fan-outs queue into its request timeout. |
 
 Set them however you set env vars, or pass
-`--model` / `--base-url` / `--api-key` explicitly.
+`--model` / `--base-url` / `--api-key` explicitly. mathx just reads the environment; it ships no
+`.env` loader of its own. `--top-p` and `--extra-body '<json>'` exist as flags too;
+`max_retries` is profile-only.
 
 The repo does include a one-line `.envrc` (`dotenv_if_exists`): if you hack on mathx from a clone
 with [direnv](https://direnv.net), it auto-loads a git-ignored `.env` so a provider key stays handy
@@ -79,7 +110,9 @@ while you test.
   hygiene-sandboxed local subprocess — timeout, fresh cwd, capped output. That is deliberately
   not called a security boundary; see [CHECK_PLAN.md](CHECK_PLAN.md) for the honest framing and
   the planned remote-isolation backends.)
-- Not a provider registry. One OpenAI-compatible client plus flags.
+- Not a provider registry. One OpenAI-compatible client plus flags; named profiles in
+  `mathx.toml` only bundle those same flags (zero provider-specific code — dialect extras
+  pass through verbatim via `extra_body`).
 - Not a benchmark / audition harness.
 - Not a frontend / renderer. mathx encourages the backend to output to `$…$` / `$$…$$` so math should render but this depends on the client you are using.
 
