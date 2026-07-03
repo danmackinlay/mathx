@@ -41,13 +41,40 @@ class TestParseDecomposition:
     def test_lenient_bullets_and_missing_argument_header(self):
         text = "Some preamble.\nCLAIMS:\n- one\n* two\n3) three\n"
         argument, claims = parse_decomposition(text)
-        assert argument == "Some preamble."
+        assert argument == ""  # no ARGUMENT: header — nothing is guessed
         assert claims == ["one", "two", "three"]
 
     def test_unparseable(self):
         assert parse_decomposition("no structure at all") is None
         assert parse_decomposition("CLAIMS:\nno numbered lines follow prose") is None
         assert parse_decomposition(None) is None
+
+    def test_template_echo_blocks_are_skipped(self):
+        # live e2e: reasoning spill echoed the format template before the answer
+        text = (
+            "Let me plan. The format is:\n"
+            "ARGUMENT:\n<the argument, in prose>\n"
+            "CLAIMS:\n1. <first claim>\n2. <second claim>\n"
+            "Okay, final answer.\n"
+            "ARGUMENT:\nThe real argument.\n"
+            "CLAIMS:\n1. Real claim one.\n2. Real claim two.\n"
+        )
+        argument, claims = parse_decomposition(text)
+        assert argument == "The real argument."
+        assert claims == ["Real claim one.", "Real claim two."]
+
+    def test_draft_spill_beyond_max_claims_is_rejected(self):
+        lines = "\n".join(f"{i}. Claim number {i}." for i in range(1, 20))
+        assert parse_decomposition(f"ARGUMENT:\nx\nCLAIMS:\n{lines}\n") is None
+
+    def test_last_valid_block_wins(self):
+        text = (
+            "ARGUMENT:\nDraft argument.\nCLAIMS:\n1. Draft claim.\n"
+            "ARGUMENT:\nFinal argument.\nCLAIMS:\n1. Final claim.\n"
+        )
+        argument, claims = parse_decomposition(text)
+        assert argument == "Final argument."
+        assert claims == ["Final claim."]
 
 
 class TestArgue:
@@ -124,6 +151,28 @@ class TestArgue:
         assert events[0] == f"ledger: {led['ledger_id']}"
         assert any("round 0: decomposing" in e for e in events)
         assert any("c1 supported" in e for e in events)
+
+
+class TestArgueExtras:
+    def test_decompositions_persisted_as_audit(self, fake_endpoint, inline_workers):
+        fake_endpoint(by_system={
+            DECOMPOSER_SYSTEM: decomp("Claim alpha."),
+            GRADER_SYSTEM: r"\boxed{TRUE}",
+        })
+        led = run_argue()
+        assert len(led["decompositions"]) == 1
+        assert "Claim alpha." in led["decompositions"][0]
+        assert ledger.read(led["ledger_id"])["decompositions"] == led["decompositions"]
+
+    def test_job_concurrency_cap_still_completes(self, fake_endpoint, inline_workers, monkeypatch):
+        monkeypatch.setenv("MATHX_CONCURRENCY", "1")  # 1 job in flight at a time
+        fake_endpoint(by_system={
+            DECOMPOSER_SYSTEM: decomp("Claim a.", "Claim b.", "Claim c."),
+            GRADER_SYSTEM: r"\boxed{TRUE}",
+        })
+        led = run_argue()
+        assert led["status"] == "assembled"
+        assert len(jobs.list_jobs()) == 3
 
 
 class TestExpand:

@@ -9,6 +9,7 @@ Three strategies:
 from __future__ import annotations
 
 import asyncio
+import os
 import random
 import re
 import time
@@ -67,6 +68,20 @@ class Result:
     tokens_in_total: int = 0
     tokens_out_total: int = 0
     elapsed_ms_total: int = 0
+
+
+def concurrency_cap() -> int | None:
+    """$MATHX_CONCURRENCY: max in-flight requests this process should hold
+    against the endpoint. Unset/invalid means unlimited. Small local servers
+    admit a handful of generations and let the rest age toward their request
+    timeout (live e2e: 3 slots, ~300 s guillotine) — cap to the server's real
+    parallelism when fanning out against one."""
+    raw = os.environ.get("MATHX_CONCURRENCY", "").strip()
+    try:
+        n = int(raw)
+    except ValueError:
+        return None
+    return n if n > 0 else None
 
 
 def parse_answer(answer: str):
@@ -281,15 +296,23 @@ async def solve(
     planned = kk
     escalations = 0
     done = 0
+    cap = concurrency_cap()
+    sem = asyncio.Semaphore(cap) if cap else None
 
     async def one() -> Sample:
         nonlocal done
-        s = await _one_sample(client, model, problem, temperature=temp, max_tokens=max_tokens)
-        if strategy == "self_verify":
-            if s.text is None or s.boxed is None:
-                s.confidence = 0.0
-            else:
-                s.confidence = await _judge_one(client, model, problem, s.text)
+        if sem is not None:
+            await sem.acquire()
+        try:
+            s = await _one_sample(client, model, problem, temperature=temp, max_tokens=max_tokens)
+            if strategy == "self_verify":
+                if s.text is None or s.boxed is None:
+                    s.confidence = 0.0
+                else:
+                    s.confidence = await _judge_one(client, model, problem, s.text)
+        finally:
+            if sem is not None:
+                sem.release()
         done += 1
         if on_sample is not None:
             on_sample(s, done, planned)

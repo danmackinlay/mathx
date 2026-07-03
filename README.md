@@ -61,6 +61,7 @@ see [`examples/qwen_agent_tool.py`](examples/qwen_agent_tool.py).
 | `MATHX_JOBS_DIR` | Optional. Where background job records live; defaults to `$XDG_CACHE_HOME/mathx/jobs`, else `~/.cache/mathx/jobs`. |
 | `MATHX_EXECUTOR` | Optional. Where `mathx check` runs checker scripts. Only `local` (the default) exists today. |
 | `MATHX_LEDGERS_DIR` | Optional. Where claim ledgers live; defaults to a `ledgers/` dir beside the job store. |
+| `MATHX_CONCURRENCY` | Optional. Max in-flight requests per process (and the job-launch budget for `argue`). Unset = unlimited. Set it to a small local server's real parallelism, or fan-outs queue into its request timeout. |
 
 Set them however you set env vars, or pass
 `--model` / `--base-url` / `--api-key` explicitly.

@@ -218,6 +218,30 @@ class TestSolve:
         assert events == [(1, 2), (2, 2), (3, 4), (4, 4)]
 
 
+class TestConcurrencyCap:
+    def test_unset_and_invalid_mean_unlimited(self, monkeypatch):
+        from mathx.engine import concurrency_cap
+
+        monkeypatch.delenv("MATHX_CONCURRENCY", raising=False)
+        assert concurrency_cap() is None
+        monkeypatch.setenv("MATHX_CONCURRENCY", "many")
+        assert concurrency_cap() is None
+        monkeypatch.setenv("MATHX_CONCURRENCY", "0")
+        assert concurrency_cap() is None
+
+    def test_set(self, monkeypatch):
+        from mathx.engine import concurrency_cap
+
+        monkeypatch.setenv("MATHX_CONCURRENCY", "3")
+        assert concurrency_cap() == 3
+
+    def test_solve_completes_under_cap(self, fake_endpoint, monkeypatch):
+        monkeypatch.setenv("MATHX_CONCURRENCY", "2")
+        fake_endpoint([r"\boxed{42}"] * 4)
+        r = _solve(k=4)
+        assert r.margin == "4/4"
+
+
 class TestResultToDict:
     def test_shape(self):
         r = Result(

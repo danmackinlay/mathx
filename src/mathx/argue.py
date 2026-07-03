@@ -17,6 +17,7 @@ from openai import AsyncOpenAI
 
 from mathx import jobs, ledger
 from mathx.engine import _one_sample
+from mathx.engine import concurrency_cap as _concurrency_cap
 
 DECOMPOSER_SYSTEM = (
     "You are a careful mathematician structuring a checkable argument.\n"
@@ -26,7 +27,8 @@ DECOMPOSER_SYSTEM = (
     "references to the problem or to other claims. Someone reading ONE claim in isolation "
     "must be able to judge it true or false. Use at most 8 claims. "
     "For inline maths use $...$.\n"
-    "Reply in EXACTLY this format:\n"
+    "Reply with the final answer ONLY — no drafts, no commentary, and the two headers below "
+    "exactly once each — in EXACTLY this format:\n"
     "ARGUMENT:\n"
     "<the argument, in prose>\n"
     "CLAIMS:\n"
@@ -36,42 +38,68 @@ DECOMPOSER_SYSTEM = (
 )
 
 CLAIM_LINE = re.compile(r"^\s*(?:\d+[.)]|[-*•])\s+(.+?)\s*$", re.MULTILINE)
+_HEADER = re.compile(r"^\s*(ARGUMENT|CLAIMS):.*$", re.MULTILINE)
+_PLACEHOLDER = re.compile(r"^<.*>$")
+MAX_CLAIMS = 12  # more than this means the reply leaked drafts, not a decomposition
 
 
 def parse_decomposition(text: str | None) -> tuple[str, list[str]] | None:
-    """(argument, claims) from an ARGUMENT:/CLAIMS: reply, or None if unparseable."""
+    """(argument, claims) from an ARGUMENT:/CLAIMS: reply, or None if unparseable.
+
+    Reasoning-tuned models sometimes spill drafts into the reply — including
+    echoes of the format template above — so headers can occur several times
+    (live e2e: a 23-"claim" parse). Candidate CLAIMS blocks are segmented at
+    headers and validated (no template placeholders, ≤ MAX_CLAIMS lines); the
+    LAST valid block wins, per the final-answer convention.
+    """
     if not text:
         return None
-    m = re.search(r"CLAIMS:\s*\n", text)
-    if m is None:
-        return None
-    head, tail = text[: m.start()], text[m.end():]
-    claims = [c.strip() for c in CLAIM_LINE.findall(tail)]
-    if not claims:
-        return None
-    am = re.search(r"ARGUMENT:\s*\n?", head)
-    argument = (head[am.end():] if am else head).strip()
-    return argument, claims
+    headers = list(_HEADER.finditer(text))
+    chosen: tuple[str, list[str]] | None = None
+    for i, h in enumerate(headers):
+        if h.group(1) != "CLAIMS":
+            continue
+        block_end = headers[i + 1].start() if i + 1 < len(headers) else len(text)
+        claims = [c.strip() for c in CLAIM_LINE.findall(text[h.end(): block_end])]
+        if not 1 <= len(claims) <= MAX_CLAIMS:
+            continue
+        if any(_PLACEHOLDER.match(c) for c in claims):
+            continue  # an echo of the format template, not an answer
+        # argument = prose between the nearest preceding ARGUMENT: header and this block
+        argument = ""
+        for j in range(i - 1, -1, -1):
+            if headers[j].group(1) == "ARGUMENT":
+                argument = text[headers[j].end(): h.start()].strip()
+                break
+        chosen = (argument, claims)
+    return chosen
 
 
 def _norm(text: str) -> str:
     return " ".join(text.split())
 
 
-async def _decompose(client, model, user, *, temperature, max_tokens, emit) -> tuple[str, list[str]]:
+async def _decompose(
+    client, model, user, *, temperature, max_tokens, emit, transcript: list | None = None
+) -> tuple[str, list[str]]:
+    """One decomposition, one retry. Raw attempt texts are appended to
+    *transcript* (the ledger keeps them: the argument's provenance is audit
+    trail like everything else)."""
     for attempt in (1, 2):
         s = await _one_sample(
             client, model, user, temperature=temperature, max_tokens=max_tokens,
             system=DECOMPOSER_SYSTEM,
         )
+        if transcript is not None:
+            transcript.append(s.text)
         if s.error is not None:
             raise RuntimeError(f"decomposition sample failed: {s.error}")
         parsed = parse_decomposition(s.text)
         if parsed is not None:
             return parsed
         if attempt == 1:
-            emit("decomposition had no ARGUMENT:/CLAIMS: structure — retrying once")
-    raise RuntimeError("decomposition failed twice: no ARGUMENT:/CLAIMS: structure in reply")
+            emit("decomposition had no valid ARGUMENT:/CLAIMS: structure — retrying once")
+    raise RuntimeError("decomposition failed twice: no valid ARGUMENT:/CLAIMS: structure in reply")
 
 
 def _refine_user(problem: str, led: dict, current: list[dict]) -> str:
@@ -128,14 +156,23 @@ async def argue(
     )
 
     led = ledger.create(problem, model=model, base_url=base_url, rounds_max=rounds)
+    led["decompositions"] = []
     emit(f"ledger: {led['ledger_id']}")
+
+    # cap concurrent check jobs so k×claims fan-outs don't stampede a small
+    # server (live e2e: 23 simultaneous jobs vs 3 server slots = mass timeouts);
+    # each worker also self-caps its requests via the same env var
+    per_job = max(1, tir_k + grade_k)
+    cap = _concurrency_cap()
+    max_jobs = max(1, cap // per_job) if cap else None
 
     user = f"Problem:\n{problem}"
     for rnd in range(rounds + 1):
         led["rounds_used"] = rnd
         emit(f"round {rnd}: {'decomposing' if rnd == 0 else 'refining'}…")
         argument, texts = await _decompose(
-            client, model, user, temperature=temp, max_tokens=max_tokens, emit=emit
+            client, model, user, temperature=temp, max_tokens=max_tokens, emit=emit,
+            transcript=led["decompositions"],
         )
         led["argument"] = argument
 
@@ -151,18 +188,33 @@ async def argue(
 
         to_check = [c for c in current if not c["verdicts"]]
         emit(f"round {rnd}: {len(current)} claims, checking {len(to_check)}")
+        queued: list[str] = []
+        deferred = lambda job_id, **_kw: queued.append(job_id)  # noqa: E731
         pending = {
-            ledger.attach_check(led, claim, round_=rnd, **check_kwargs): claim
+            ledger.attach_check(led, claim, round_=rnd, **{**check_kwargs, "spawn": deferred}): claim
             for claim in to_check
         }
+        in_flight: set[str] = set()
+
+        def launch_up_to_cap() -> None:
+            while queued and (max_jobs is None or len(in_flight) < max_jobs):
+                job_id = queued.pop(0)
+                (spawn or jobs.spawn_worker)(job_id, api_key=api_key)
+                in_flight.add(job_id)
+
+        launch_up_to_cap()
         while pending:
             await asyncio.sleep(poll_s)
             for job_id, claim in list(pending.items()):
+                if job_id not in in_flight:
+                    continue
                 if jobs.read(job_id).get("status") == "running":
                     continue
                 state, detail = ledger.claim_state(claim)
                 emit(f"  {claim['id']} {state}" + (f" — {detail}" if detail else ""))
                 del pending[job_id]
+                in_flight.discard(job_id)
+                launch_up_to_cap()
 
         unsupported = []
         pad_seen = {_norm(e["claim"]) for e in led["scratchpad"]}

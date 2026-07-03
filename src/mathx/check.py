@@ -24,7 +24,7 @@ from dataclasses import dataclass
 
 from openai import AsyncOpenAI
 
-from mathx.engine import Sample, _one_sample, sample_to_dict
+from mathx.engine import Sample, _one_sample, concurrency_cap, sample_to_dict
 from mathx.executor import ExecResult, LocalExecutor, get_executor
 
 CHECKER_SYSTEM = (
@@ -212,11 +212,21 @@ async def check(
     executor = executor or get_executor()
     temp = 0.7 if temperature is None else temperature
     prompt = f"Claim:\n{claim}"
+    cap = concurrency_cap()
+    sem = asyncio.Semaphore(cap) if cap else None
+
+    async def sample(system: str) -> Sample:
+        if sem is not None:
+            async with sem:
+                return await _one_sample(
+                    client, model, prompt, temperature=temp, max_tokens=max_tokens, system=system
+                )
+        return await _one_sample(
+            client, model, prompt, temperature=temp, max_tokens=max_tokens, system=system
+        )
 
     async def one_tir() -> ScriptRun:
-        gen = await _one_sample(
-            client, model, prompt, temperature=temp, max_tokens=max_tokens, system=CHECKER_SYSTEM
-        )
+        gen = await sample(CHECKER_SYSTEM)
         if gen.error is not None:
             return ScriptRun("error", f"generation failed: {gen.error}", None, "", "", None, False, 0, gen)
         code = extract_code(gen.text)
@@ -229,9 +239,7 @@ async def check(
         )
 
     async def one_grade() -> Sample:
-        return await _one_sample(
-            client, model, prompt, temperature=temp, max_tokens=max_tokens, system=GRADER_SYSTEM
-        )
+        return await sample(GRADER_SYSTEM)
 
     tir_runs, grade_samples = await asyncio.gather(
         asyncio.gather(*[one_tir() for _ in range(max(0, tir_k))]),
