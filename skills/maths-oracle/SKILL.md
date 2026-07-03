@@ -37,6 +37,8 @@ mathx submit --check "<claim>"        # background via the job store, same polli
 
 Two lanes run: a model-written sympy verification script that mathx executes (`tir`), and a TRUE/FALSE vote of k samples (`grade`). Report the status honestly — it is evidence, not proof: `supported` means the script's checks passed and/or the vote went TRUE, never "proven". On `conflict`, show the user both sides (`mathx show <run> --script 0` prints the checker script and its output).
 
+For a whole argument rather than one claim, `mathx argue "<problem>"` decomposes, checks every claim, and refines — it prints a ledger id (blocking; minutes). Render with `mathx show <ledger_id>`; act on individual claims with `mathx ledger recheck|challenge|expand`. Or drive the loop yourself: decompose the problem in your own reasoning and `mathx submit --check` each claim — same job store either way.
+
 Strategy guidance:
 
 - `--strategy maj@k` (default) is the right choice almost always.

@@ -60,6 +60,7 @@ see [`examples/qwen_agent_tool.py`](examples/qwen_agent_tool.py).
 | `MATHX_API_KEY` | Set to whatever provider's key value. (Falls back to `OPENAI_API_KEY`) |
 | `MATHX_JOBS_DIR` | Optional. Where background job records live; defaults to `$XDG_CACHE_HOME/mathx/jobs`, else `~/.cache/mathx/jobs`. |
 | `MATHX_EXECUTOR` | Optional. Where `mathx check` runs checker scripts. Only `local` (the default) exists today. |
+| `MATHX_LEDGERS_DIR` | Optional. Where claim ledgers live; defaults to a `ledgers/` dir beside the job store. |
 
 Set them however you set env vars, or pass
 `--model` / `--base-url` / `--api-key` explicitly.
@@ -159,6 +160,33 @@ lands in the JSON record. `mathx show <run>` renders it; `--script N` prints a c
 script and its output, `--sample N` a grader's reasoning. `MATHX_EXECUTOR` picks where
 checker scripts run (only `local` today; remote sandbox backends are planned).
 
+## Building an argument
+
+`mathx argue` runs the decompose–check–refine loop (design: [LOOP_PLAN.md](LOOP_PLAN.md)):
+
+```bash
+mathx argue "Show that the sum of the first n odd numbers is n^2."
+```
+
+The problem is decomposed into self-contained claims; each claim becomes a background check
+job; refuted or unclear verdicts (plus a scratchpad of everything refuted so far) are spliced
+into a refinement pass, up to `--rounds` times. The result is a **claim ledger** — a
+persistent file listing the argument and every claim with a live verdict badge derived from
+the job store. Exit code 0 only if every active claim ends supported.
+
+```bash
+mathx show <ledger_id>                              # render the ledger, live badges
+mathx ledger                                        # list ledgers
+mathx ledger recheck  <ledger> <claim> --grade-k 16 # escalate one claim
+mathx ledger challenge <ledger> <claim> "<objection>"
+mathx ledger expand   <ledger> <claim>              # decompose into checked sub-claims
+```
+
+Claims restated verbatim across rounds keep their verdicts; dropped claims are retired, never
+deleted. `recheck`/`challenge`/`expand` accept `--model` overrides — re-examining a claim
+with a stronger model is legitimate regime mixing. Ledgers live beside the job store
+(`MATHX_LEDGERS_DIR` to relocate).
+
 ## Design invariants
 
 Three properties hold across every surface; they are pinned in [ROADMAP.md](ROADMAP.md) so
@@ -247,10 +275,12 @@ src/mathx/
   engine.py       sample, judge, cluster-and-vote, solve(); the maths logic
   check.py        claim checking: tir script lane + grade vote lane (`mathx check`)
   executor.py     where checker code runs: local subprocess today, remote seam for later
-  report.py       pure renderers over the run JSON (`mathx show`)
+  argue.py        decompose–check–refine loop (`mathx argue`) + claim expansion
+  ledger.py       claim-ledger store; live claim state derived from the job store
+  report.py       pure renderers over run/check/ledger JSON (`mathx show`)
   jobs.py         file-per-job store + detached worker (`python -m mathx.jobs <id>`)
   mcp_server.py   FastMCP wrapper: submit_solve / check_solve over the job store
-  cli.py          click group: solve, check, submit, status, jobs, show, doctor, mcp-serve
+  cli.py          click group: solve, check, argue, submit, status, jobs, show, ledger, …
 skills/maths-oracle/
   SKILL.md     agent-facing trigger phrases + dispatch recipe (any agent via npx skills)
 tests/

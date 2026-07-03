@@ -1,4 +1,4 @@
-"""mathx CLI: ``solve``/``submit``/``status``/``jobs``/``show``/``doctor``/``mcp-serve``."""
+"""mathx CLI: solve/check/argue, submit/status/jobs, show/ledger, doctor, mcp-serve."""
 from __future__ import annotations
 
 import asyncio
@@ -10,12 +10,14 @@ from pathlib import Path
 
 import click
 
-from mathx import jobs
+from mathx import jobs, ledger
+from mathx.argue import argue, expand_claim
 from mathx.check import check, check_result_to_dict
 from mathx.engine import Sample, result_to_dict, solve
 from mathx.report import (
     render_check_report,
     render_check_script,
+    render_ledger,
     render_report,
     render_sample,
 )
@@ -272,6 +274,66 @@ def check_cmd(
         sys.exit(2)
 
 
+@cli.command(name="argue")
+@click.argument("problem")
+@endpoint_options
+@click.option(
+    "--rounds",
+    type=int,
+    default=2,
+    show_default=True,
+    help="max refine cycles after the initial decomposition",
+)
+@click.option("--tir-k", type=int, default=1, show_default=True,
+              help="checker scripts per claim (0 = lane off)")
+@click.option("--grade-k", type=int, default=4, show_default=True,
+              help="TRUE/FALSE graders per claim (0 = lane off)")
+@click.option("--exec-timeout", type=float, default=60.0, show_default=True,
+              help="seconds each checker script may run")
+def argue_cmd(
+    problem: str,
+    model: str,
+    base_url: str,
+    api_key: str,
+    temperature: float | None,
+    max_tokens: int,
+    rounds: int,
+    tir_k: int,
+    grade_k: int,
+    exec_timeout: float,
+) -> None:
+    """Decompose–check–refine: build an argument with a checked claim ledger.
+
+    Decomposes the problem into self-contained claims, checks each via a
+    background check job, and refines the argument from failed verdicts, up to
+    --rounds times. Prints the ledger id first, then the assembled ledger.
+    Exit code: 0 if every claim ends supported, 2 otherwise.
+    """
+    try:
+        led = asyncio.run(
+            argue(
+                problem,
+                model=model,
+                base_url=base_url,
+                api_key=api_key,
+                rounds=rounds,
+                tir_k=tir_k,
+                grade_k=grade_k,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                exec_timeout_s=exec_timeout,
+                on_event=lambda msg: click.echo(msg, err=True),
+            )
+        )
+    except (RuntimeError, ValueError) as e:
+        raise click.ClickException(str(e)) from e
+    click.echo(led["ledger_id"])
+    click.echo(render_ledger(led, ledger.claim_state))
+    active = [c for c in led["claims"] if c["retired_round"] is None]
+    if any(ledger.claim_state(c)[0] != "supported" for c in active):
+        sys.exit(2)
+
+
 @cli.command(name="submit")
 @click.argument("problem", metavar="PROBLEM_OR_CLAIM")
 @provider_options
@@ -433,7 +495,7 @@ def jobs_cmd(as_json: bool, prune: float | None) -> None:
     help="check records only: print checker script N's code and output",
 )
 def show_cmd(run: str, sample_index: int | None, script_index: int | None) -> None:
-    """Render a run's audit record — a JSON file from `--out`, or a job id."""
+    """Render an audit record — a JSON file from `--out`, a job id, or a ledger id."""
     path = Path(run)
     if path.is_file():
         try:
@@ -446,7 +508,10 @@ def show_cmd(run: str, sample_index: int | None, script_index: int | None) -> No
         try:
             record = jobs.check(run)
         except KeyError:
-            raise click.ClickException(f"no such file or job id: {run}") from None
+            try:
+                record = ledger.read(run)
+            except KeyError:
+                raise click.ClickException(f"no such file, job id, or ledger id: {run}") from None
         if record.get("status") == "running":
             raise click.ClickException(
                 f"job {run} is still running "
@@ -458,7 +523,13 @@ def show_cmd(run: str, sample_index: int | None, script_index: int | None) -> No
     run_dict = record.get("result") if "result" in record else record
     kind = run_dict.get("kind") or ("check" if "claim" in run_dict else "solve")
     try:
-        if kind == "check":
+        if kind == "ledger":
+            if sample_index is not None or script_index is not None:
+                raise click.ClickException(
+                    "--sample/--script don't apply to ledgers; use them on a claim's job id"
+                )
+            text = render_ledger(run_dict, ledger.claim_state)
+        elif kind == "check":
             if script_index is not None:
                 text = render_check_script(run_dict, script_index)
             elif sample_index is not None:
@@ -477,6 +548,115 @@ def show_cmd(run: str, sample_index: int | None, script_index: int | None) -> No
     except IndexError as e:
         raise click.ClickException(str(e)) from e
     click.echo(text)
+
+
+@cli.group(name="ledger", invoke_without_command=True)
+@click.pass_context
+def ledger_group(ctx: click.Context) -> None:
+    """List claim ledgers, or act on one (recheck / challenge / expand)."""
+    if ctx.invoked_subcommand is not None:
+        return
+    records = ledger.list_ledgers()
+    if not records:
+        click.echo("no ledgers yet (build one with `mathx argue`)")
+        return
+    for led in records:
+        counts = ledger.state_counts(led)
+        summary = " ".join(f"{n}{_STATE_ABBREV.get(s, s[:1])}" for s, n in sorted(counts.items()))
+        problem = " ".join(str(led.get("problem", "")).split())
+        if len(problem) > 40:
+            problem = problem[:39] + "…"
+        updated = (led.get("updated_at") or "")[:19]
+        click.echo(
+            f"{led['ledger_id']}  {led.get('status', '?'):<9}  {updated}  {summary:<20}  {problem}"
+        )
+
+
+_STATE_ABBREV = {
+    "supported": "✓", "refuted": "✗", "unclear": "?", "conflict": "!",
+    "error": "!", "checking": "…", "unchecked": "·", "retired": "–", "missing": "?",
+}
+
+
+def _load_ledger_claim(ledger_id: str, claim_id: str) -> tuple[dict, dict]:
+    try:
+        led = ledger.read(ledger_id)
+        return led, ledger.get_claim(led, claim_id)
+    except KeyError as e:
+        raise click.ClickException(str(e)) from e
+
+
+@ledger_group.command(name="recheck")
+@click.argument("ledger_id")
+@click.argument("claim_id")
+@endpoint_options
+@check_options
+def recheck_cmd(
+    ledger_id: str, claim_id: str, model: str, base_url: str, api_key: str,
+    temperature: float | None, max_tokens: int, tir_k: int, grade_k: int, exec_timeout: float,
+) -> None:
+    """Re-check one claim (e.g. at higher --grade-k); badges refresh on next render."""
+    led, claim = _load_ledger_claim(ledger_id, claim_id)
+    job_id = ledger.attach_check(
+        led, claim, api_key=api_key, round_=led["rounds_used"], kind="recheck",
+        model=model, base_url=base_url, tir_k=tir_k, grade_k=grade_k,
+        exec_timeout_s=exec_timeout, temperature=temperature, max_tokens=max_tokens,
+    )
+    click.echo(job_id)
+    click.echo(f"rechecking {claim_id}; render with: mathx show {ledger_id}", err=True)
+
+
+@ledger_group.command(name="challenge")
+@click.argument("ledger_id")
+@click.argument("claim_id")
+@click.argument("objection")
+@endpoint_options
+@check_options
+def challenge_cmd(
+    ledger_id: str, claim_id: str, objection: str, model: str, base_url: str, api_key: str,
+    temperature: float | None, max_tokens: int, tir_k: int, grade_k: int, exec_timeout: float,
+) -> None:
+    """Re-check one claim with a specific objection put to the checkers."""
+    led, claim = _load_ledger_claim(ledger_id, claim_id)
+    text = (
+        f"{claim['text']}\n\nWhen judging this claim, specifically address the "
+        f"following objection: {objection}"
+    )
+    job_id = ledger.attach_check(
+        led, claim, api_key=api_key, round_=led["rounds_used"], kind="challenge",
+        text_override=text, model=model, base_url=base_url, tir_k=tir_k, grade_k=grade_k,
+        exec_timeout_s=exec_timeout, temperature=temperature, max_tokens=max_tokens,
+    )
+    click.echo(job_id)
+    click.echo(f"challenging {claim_id}; render with: mathx show {ledger_id}", err=True)
+
+
+@ledger_group.command(name="expand")
+@click.argument("ledger_id")
+@click.argument("claim_id")
+@endpoint_options
+@check_options
+def expand_cmd(
+    ledger_id: str, claim_id: str, model: str, base_url: str, api_key: str,
+    temperature: float | None, max_tokens: int, tir_k: int, grade_k: int, exec_timeout: float,
+) -> None:
+    """Decompose one claim into sub-claims and check each of them."""
+    led, claim = _load_ledger_claim(ledger_id, claim_id)
+    try:
+        children = asyncio.run(
+            expand_claim(
+                led, claim, api_key=api_key, model=model, base_url=base_url,
+                tir_k=tir_k, grade_k=grade_k, temperature=temperature,
+                max_tokens=max_tokens, exec_timeout_s=exec_timeout,
+            )
+        )
+    except RuntimeError as e:
+        raise click.ClickException(str(e)) from e
+    for child in children:
+        click.echo(f"{child['id']}  {child['text']}")
+    click.echo(
+        f"{len(children)} sub-claims checking; render with: mathx show {ledger_id}", err=True
+    )
 
 
 @cli.command(name="mcp-serve")

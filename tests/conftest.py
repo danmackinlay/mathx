@@ -9,6 +9,7 @@ scheduling order.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Callable
 
@@ -16,6 +17,7 @@ import httpx
 import pytest
 from openai import AsyncOpenAI
 
+import mathx.argue as argue_mod
 import mathx.check as check_mod
 import mathx.engine as engine
 
@@ -85,6 +87,22 @@ def isolated_jobs_dir(tmp_path, monkeypatch):
 
 
 @pytest.fixture
+def inline_workers(monkeypatch):
+    """Replace the detached worker subprocess with in-process tasks, so spawned
+    check jobs run against the fake endpoint inside the caller's event loop."""
+    import mathx.jobs as jobs
+
+    tasks = []
+
+    def spawn(job_id: str, **_kw) -> None:
+        tasks.append(asyncio.get_running_loop().create_task(jobs.run_job(job_id)))
+
+    monkeypatch.setenv("MATHX_API_KEY", "test-key")
+    monkeypatch.setattr(jobs, "spawn_worker", spawn)
+    return tasks
+
+
+@pytest.fixture
 def fake_endpoint(monkeypatch):
     def install(
         replies: list[str | int] = (),
@@ -102,6 +120,7 @@ def fake_endpoint(monkeypatch):
 
         monkeypatch.setattr(engine, "AsyncOpenAI", make_client)
         monkeypatch.setattr(check_mod, "AsyncOpenAI", make_client)
+        monkeypatch.setattr(argue_mod, "AsyncOpenAI", make_client)
         return ep
 
     return install

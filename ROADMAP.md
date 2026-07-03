@@ -50,9 +50,9 @@ Every stage must preserve these three. A proposed change that breaks one is the 
 - `mathx check "<claim>"` (`src/mathx/check.py`): two concurrent verdict lanes — `tir` (model writes a SymPy verification script; the `Executor` seam in `src/mathx/executor.py` runs it locally and parses VERDICT/COUNTEREXAMPLE from stdout) and `grade` (k-sample TRUE/FALSE vote). Status: supported / refuted / conflict / unclear; full audit trail (code, output, reasoning) in the record; `mathx submit --check` runs it through the Stage-2 job store; `mathx show` renders verdict records (`--script N` for checker code+output).
 - 2026-07 survey result: literal multi-turn TIR is viable on existing endpoints (Featherless serves `/v1/completions`; OpenMath-Nemotron/Nemotron-Math are TIR-native, CC-BY-4.0) — deferred as the upgrade lane behind the same interface. Remote executors (E2B/Daytona/Modal) deferred behind the `Executor` seam.
 
-**Stage 4 — the decompose–check–refine loop** (the actual AxProverBase-equivalent)
-- Plan: decompose problem into claims (generalist call). Check: Stage-3 primitive per claim, fanned out via Stage-2 jobs. Refine: failed verdicts + memory scratchpad spliced back. Assemble: human-readable argument + claim ledger with per-claim verdict badges.
-- Interactive verbs on the ledger: expand a claim, challenge it, re-check at higher k.
+**Stage 4 — the decompose–check–refine loop** (the actual AxProverBase-equivalent; design: [LOOP_PLAN.md](LOOP_PLAN.md)) — ✅ done
+- `mathx argue` (`src/mathx/argue.py`): decompose into self-contained claims (generalist call) → Stage-3 check job per claim via the Stage-2 store → refine from failed verdicts + scratchpad of refuted claims, up to `--rounds`. The claim ledger (`src/mathx/ledger.py`) is a persistent file (claim tree → job ids); state derived live from the job store; `mathx show <ledger_id>` renders badges.
+- Interactive verbs shipped: `mathx ledger recheck` (higher k), `challenge` (objection in the prompt), `expand` (checked sub-claims, one tree level); all accept `--model` overrides (regime mixing).
 
 **Stage 5 — the face**
 - MCP registration in Open WebUI (free after Stage 2); optionally a Pipeline that owns the loop and streams claim-ledger progress. A ledger TUI/web view once the loop earns it.

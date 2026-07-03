@@ -331,6 +331,116 @@ class TestShow:
         assert "kaboom" in result.output
 
 
+class TestArgueAndLedger:
+    DECOMP = "ARGUMENT:\nBecause reasons.\nCLAIMS:\n1. Claim alpha.\n2. Claim beta.\n"
+
+    @pytest.fixture
+    def fast_poll(self, monkeypatch):
+        import functools
+
+        import mathx.cli as cli_mod
+        from mathx.argue import argue as real_argue
+
+        monkeypatch.setattr(cli_mod, "argue", functools.partial(real_argue, poll_s=0.01))
+
+    def test_argue_end_to_end(self, fake_endpoint, inline_workers, fast_poll):
+        from mathx.argue import DECOMPOSER_SYSTEM
+        from mathx.check import GRADER_SYSTEM
+
+        fake_endpoint(by_system={
+            DECOMPOSER_SYSTEM: self.DECOMP,
+            GRADER_SYSTEM: r"\boxed{TRUE}",
+        })
+        result = invoke("argue", "why?", *PROVIDER_ARGS, "--tir-k", "0", "--grade-k", "1")
+        assert result.exit_code == 0, result.output
+        ledger_id = result.stdout.splitlines()[0]
+        assert "Because reasons." in result.stdout
+        assert "✓ supported" in result.stdout
+        assert "round 0: decomposing" in result.stderr
+
+        shown = invoke("show", ledger_id)
+        assert shown.exit_code == 0, shown.output
+        assert "claims (live badges from the job store):" in shown.output
+
+        listed = invoke("ledger")
+        assert ledger_id in listed.output
+        assert "assembled" in listed.output
+
+    def test_argue_exit_2_when_unsupported(self, fake_endpoint, inline_workers, fast_poll):
+        from mathx.argue import DECOMPOSER_SYSTEM
+        from mathx.check import GRADER_SYSTEM
+
+        fake_endpoint(by_system={
+            DECOMPOSER_SYSTEM: self.DECOMP,
+            GRADER_SYSTEM: r"\boxed{FALSE}",
+        })
+        result = invoke(
+            "argue", "why?", *PROVIDER_ARGS, "--tir-k", "0", "--grade-k", "1", "--rounds", "0"
+        )
+        assert result.exit_code == 2
+        assert "✗ refuted" in result.stdout
+
+    def test_ledger_list_empty(self):
+        result = invoke("ledger")
+        assert result.exit_code == 0
+        assert "no ledgers yet" in result.output
+
+    def _seed_ledger(self):
+        from mathx import ledger
+
+        led = ledger.create("p?", model="m", base_url="http://b/v1", rounds_max=2)
+        claim = ledger.add_claim(led, "Claim alpha.", round_added=0)
+        ledger.save(led)
+        return led, claim
+
+    def test_recheck_appends_verdict_ref(self, no_spawn):
+        from mathx import ledger
+
+        led, claim = self._seed_ledger()
+        result = invoke(
+            "ledger", "recheck", led["ledger_id"], claim["id"], *PROVIDER_ARGS, "--grade-k", "16"
+        )
+        assert result.exit_code == 0, result.output
+        job_id = result.stdout.strip()
+        assert no_spawn == [(job_id, {"api_key": "test-key"})]
+        persisted = ledger.read(led["ledger_id"])
+        verdict = persisted["claims"][0]["verdicts"][-1]
+        assert verdict == {"job_id": job_id, "round": 0, "kind": "recheck"}
+        assert jobs.read(job_id)["args"]["grade_k"] == 16
+        assert jobs.read(job_id)["args"]["model"] == "test-model"  # CLI override wins
+
+    def test_challenge_checks_modified_statement(self, no_spawn):
+        led, claim = self._seed_ledger()
+        result = invoke(
+            "ledger", "challenge", led["ledger_id"], claim["id"], "what about n=0?", *PROVIDER_ARGS
+        )
+        assert result.exit_code == 0, result.output
+        args = jobs.read(result.stdout.strip())["args"]
+        assert "Claim alpha." in args["claim"]
+        assert "what about n=0?" in args["claim"]
+
+    def test_expand_adds_children(self, fake_endpoint, no_spawn):
+        from mathx import ledger
+        from mathx.argue import DECOMPOSER_SYSTEM
+
+        fake_endpoint(by_system={
+            DECOMPOSER_SYSTEM: "ARGUMENT:\nx\nCLAIMS:\n1. Sub one.\n2. Sub two.\n"
+        })
+        led, claim = self._seed_ledger()
+        result = invoke("ledger", "expand", led["ledger_id"], claim["id"], *PROVIDER_ARGS)
+        assert result.exit_code == 0, result.output
+        persisted = ledger.read(led["ledger_id"])
+        children = [c for c in persisted["claims"] if c["parent"] == claim["id"]]
+        assert [c["text"] for c in children] == ["Sub one.", "Sub two."]
+        assert len(no_spawn) == 2
+
+    def test_unknown_claim_is_a_clean_error(self):
+        led, _ = self._seed_ledger()
+        result = invoke("ledger", "recheck", led["ledger_id"], "c9", *PROVIDER_ARGS)
+        assert result.exit_code != 0
+        assert "no claim 'c9'" in result.output
+
+
 def finalize_check_job() -> dict:
     record = jobs.submit(
         kind="check",

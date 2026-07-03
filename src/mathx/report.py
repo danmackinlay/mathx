@@ -183,6 +183,69 @@ def render_check_report(run: dict) -> str:
     return "\n".join(lines)
 
 
+_STATE_GLYPH = {
+    "supported": "✓",
+    "refuted": "✗",
+    "conflict": "!",
+    "unclear": "?",
+    "error": "!",
+    "checking": "…",
+    "unchecked": "·",
+    "retired": "–",
+    "missing": "?",
+}
+
+
+def render_ledger(led: dict, state_of) -> str:
+    """One-screen claim ledger; ``state_of(claim) -> (state, detail)`` derives
+    live badges (pass ``mathx.ledger.claim_state`` outside tests)."""
+    lines = [
+        f"ledger: {led.get('ledger_id')}   status: {led.get('status')}   "
+        f"rounds: {led.get('rounds_used')}/{led.get('rounds_max')}   model: {led.get('model')}"
+    ]
+    if led.get("problem"):
+        lines.append(f"problem: {_one_line(led['problem'], 100)}")
+    if led.get("argument"):
+        lines += ["", "argument:", led["argument"].rstrip()]
+
+    claims: list[dict] = led.get("claims") or []
+    if claims:
+        lines += ["", "claims (live badges from the job store):"]
+
+        def emit(claim: dict, indent: str) -> None:
+            state, detail = state_of(claim)
+            glyph = _STATE_GLYPH.get(state, "?")
+            lines.append(
+                f"{indent}{claim['id']:>4}  {glyph} {state:<10} {_one_line(claim['text'], 76)}"
+            )
+            verdicts = claim.get("verdicts") or []
+            trail = f"[{verdicts[-1]['job_id']}]" if verdicts else ""
+            if (detail or trail) and state != "retired":
+                body = " ".join(p for p in (_one_line(detail, 60), trail) if p)
+                lines.append(f"{indent}      {'':<12} {body}")
+
+        by_parent: dict[str | None, list[dict]] = {}
+        for claim in claims:
+            by_parent.setdefault(claim.get("parent"), []).append(claim)
+        for top in by_parent.get(None, []):
+            emit(top, "  ")
+            for child in by_parent.get(top["id"], []):
+                emit(child, "      ")
+
+    if led.get("scratchpad"):
+        lines += ["", "scratchpad (refuted along the way):"]
+        for entry in led["scratchpad"]:
+            note = f" — {_one_line(entry['note'], 50)}" if entry.get("note") else ""
+            lines.append(f"  r{entry.get('round')}: {_one_line(entry['claim'], 70)}{note}")
+
+    lines += [
+        "",
+        EVIDENCE_NOTE,
+        "`mathx show <job_id>` for any claim's audit; `mathx ledger recheck <ledger> <claim>` to escalate",
+    ]
+    return "\n".join(lines)
+
+
 def render_check_script(run: dict, index: int) -> str:
     """Checker script *index*: its code, then what it printed."""
     tir_runs: list[dict] = run.get("tir") or []
