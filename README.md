@@ -95,6 +95,9 @@ mathx solve "7^999 mod 1000" --strategy maj@k --k 16
 against a competent generalist endpoint should return `143` with high certainty.
 Interestingly  `Qwen2.5-Math-72B` returns `43` unanimously.
 
+That's the ten-second pipe check. For the real tour — recover-and-verify a formula, audit a
+plausible-but-false belief, build a claim ledger — work through [EXAMPLES.md](EXAMPLES.md).
+
 ## How an agent uses it
 
 A typical call:
