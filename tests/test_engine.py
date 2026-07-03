@@ -141,6 +141,13 @@ class TestSolve:
         errors = [s for s in r.samples if s.error]
         assert len(errors) == 1 and "Error" in errors[0].error
 
+    def test_empty_completion_is_a_labelled_error(self, fake_endpoint):
+        fake_endpoint([r"\boxed{42}", ""])
+        r = _solve(k=2)
+        assert r.margin == "1/1"
+        empty = [s for s in r.samples if s.error == "empty completion"]
+        assert len(empty) == 1
+
     def test_self_verify_confidence_weighting(self, fake_endpoint):
         fake_endpoint(
             [r"\boxed{41}", r"\boxed{41}", r"\boxed{42}"],

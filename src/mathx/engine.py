@@ -155,6 +155,10 @@ async def _one_sample(
         return Sample(
             text=text,
             boxed=extract_boxed(text),
+            # a "successful" response with no content is a failure, and saying so
+            # beats a silent abstention (live e2e: local server returned empty
+            # completions under load)
+            error=None if text else "empty completion",
             tokens_in=getattr(usage, "prompt_tokens", 0) or 0,
             tokens_out=getattr(usage, "completion_tokens", 0) or 0,
             elapsed_ms=int((time.monotonic() - t0) * 1000),
