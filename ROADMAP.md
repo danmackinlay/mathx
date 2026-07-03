@@ -60,4 +60,6 @@ Every stage must preserve these three. A proposed change that breaks one is the 
 
 **Cross-cutting prerequisite** — ✅ done: pytest suite in `tests/` with a mocked OpenAI-compatible endpoint (httpx `MockTransport` under the real openai client — full wire path, no network); covers the pure helpers, `solve()` incl. escalation, the report renderers, and both CLI verbs. `uv run pytest`.
 
+**Cross-cutting: answer equivalence** (design: [EQUIV_PLAN.md](EQUIV_PLAN.md)) — the vote's core primitive. CAS-first (math-verify) with a labelled LLM judge-fallback for the residue (variable renaming, forms the CAS refuses); adopt-vs-build pending the tooling survey.
+
 Every stage is independently useful, and the oracle never stops being the thin swappable thing — it just gets called per claim instead of per problem.
