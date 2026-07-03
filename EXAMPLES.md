@@ -25,6 +25,19 @@ export MATHX_API_KEY=x            # unused, but the slot is required
 Cost yardstick: example 1 ≈ 16–48 samples, example 2 ≈ 30–60 (including the argue round) —
 minutes and modest tokens on a cloud endpoint; free but slower locally.
 
+**Two lessons from running these live against a local server:**
+
+- *Match the model to the role.* Reasoning-tuned math specialists are strong solvers and
+  graders but can be hopeless at the meta-tasks — writing a checker script or emitting the
+  ARGUMENT:/CLAIMS: decomposition (one spiralled for 16k tokens without producing a code
+  fence). Use a generalist for `argue` and the tir lane; use the specialist for `solve` and
+  grading. Models are per-invocation, so mixing is just a `--model` flag.
+- *Pace the fan-out to the server.* A small local server admits a few concurrent generations
+  and lets the rest queue into its request timeout. Set `MATHX_CONCURRENCY` to the server's
+  real parallelism and keep `--max-tokens` low enough that one sample fits inside the
+  server's per-request timeout, or your lanes will fill with timeout errors (honestly
+  labelled, but wasted).
+
 ## 1. Recover and verify a formula — KL between two Gaussians
 
 You're writing an ELBO and half-remember the closed form. Sign errors and swapped σ's are
@@ -109,6 +122,16 @@ over-claims — "softmax(c·z) ≠ softmax(z) for **all** c > 0" is false at c =
 refutes it, the claim lands in the scratchpad, and a refinement round repairs the wording:
 the loop working as designed. If it doesn't happen naturally, your `challenge` at c = 1
 makes the same point deliberately.
+
+A `conflict` badge is the workflow's finest moment, not a malfunction. In our live run, a
+temperature-monotonicity claim came back *tir: fail, grade: true 2/2*. Reading the script
+(`mathx show <job-id> --script 0`) settled it in one glance: the script's symbolic comments
+derived the claim correctly, then its numeric loop tested the bare probability
+$\sigma_T(z)_i$ instead of the claimed ratio $\sigma_T(z)_i/\sigma_T(z)_j$ — a buggy test,
+true claim, graders right. `mathx ledger recheck <ledger> c6` then upgraded the badge to
+supported on a fresh 2/2 grade vote (the earlier conflict verdict stays in the claim's
+history). The conflict didn't tell you the answer; it told you exactly where to look — that
+is the product.
 
 ## Backgrounding any of this
 
