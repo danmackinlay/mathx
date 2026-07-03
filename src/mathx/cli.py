@@ -84,6 +84,7 @@ def resolve_provider(
     top_p: float | None,
     extra_body: str | None,
     meta_model: str | None = None,
+    equiv_judge_model: str | None = None,
     require: tuple = ("model", "base_url", "api_key"),
 ) -> dict:
     """Merge flags > profile > environment into the provider settings dict.
@@ -133,6 +134,7 @@ def resolve_provider(
         "extra_body": extra,
         "max_retries": prof.get("max_retries"),
         "meta_model": pick(meta_model, "meta_model"),
+        "equiv_judge_model": pick(equiv_judge_model, "equiv_judge_model"),
     }
     # a profile's concurrency reaches this process AND its spawned workers via env
     if prof.get("concurrency") and not os.environ.get("MATHX_CONCURRENCY"):
@@ -163,6 +165,13 @@ _SOLVE_OPTIONS = [
         default=None,
         help="auto-escalate: while the winner holds no strict majority of the vote, "
         "double k and re-vote, up to this many samples total",
+    ),
+    click.option(
+        "--equiv-judge-model",
+        default=None,
+        help="enable the LLM equivalence judge for answer clusters the CAS refuses "
+        "to merge; judge merges are counted and labelled in the margin. "
+        "Default: off (or profile equiv_judge_model)",
     ),
 ]
 
@@ -246,6 +255,7 @@ def solve_cmd(
     top_p: float | None,
     extra_body: str | None,
     max_k: int | None,
+    equiv_judge_model: str | None,
     progress: bool | None,
     out: Path | None,
 ) -> None:
@@ -253,6 +263,7 @@ def solve_cmd(
     p = resolve_provider(
         profile=profile, model=model, base_url=base_url, api_key=api_key,
         temperature=temperature, max_tokens=max_tokens, top_p=top_p, extra_body=extra_body,
+        equiv_judge_model=equiv_judge_model,
     )
     on_sample = on_escalate = None
     show_progress = progress if progress is not None else sys.stderr.isatty()
@@ -286,6 +297,7 @@ def solve_cmd(
             top_p=p["top_p"],
             extra_body=p["extra_body"],
             max_retries=p["max_retries"],
+            equiv_judge_model=p["equiv_judge_model"],
             on_sample=on_sample,
             on_escalate=on_escalate,
         )
@@ -302,6 +314,8 @@ def solve_cmd(
     )
     if result.escalations:
         meta += f"   escalations: {result.escalations}"
+    if result.judge_merges:
+        meta += f"   judge merges: {result.judge_merges}"
     click.echo(meta)
     click.echo(
         f"tokens: in={result.tokens_in_total} out={result.tokens_out_total}   "
@@ -500,6 +514,7 @@ def submit_cmd(
     top_p: float | None,
     extra_body: str | None,
     max_k: int | None,
+    equiv_judge_model: str | None,
     meta_model: str | None,
     tir_k: int,
     grade_k: int,
@@ -515,7 +530,7 @@ def submit_cmd(
     p = resolve_provider(
         profile=profile, model=model, base_url=base_url, api_key=api_key,
         temperature=temperature, max_tokens=max_tokens, top_p=top_p,
-        extra_body=extra_body, meta_model=meta_model,
+        extra_body=extra_body, meta_model=meta_model, equiv_judge_model=equiv_judge_model,
     )
     common = {
         "model": p["model"],
@@ -537,7 +552,10 @@ def submit_cmd(
         }
         record = jobs.submit(kind="check", args=args)
     else:
-        args = {"problem": problem, "strategy": strategy, "k": k, "max_k": max_k, **common}
+        args = {
+            "problem": problem, "strategy": strategy, "k": k, "max_k": max_k,
+            "equiv_judge_model": p["equiv_judge_model"], **common,
+        }
         record = jobs.submit(kind="solve", args=args)
     jobs.spawn_worker(record["job_id"], api_key=p["api_key"])
     click.echo(record["job_id"])

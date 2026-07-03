@@ -225,6 +225,72 @@ class TestSolve:
         assert events == [(1, 2), (2, 2), (3, 4), (4, 4)]
 
 
+class TestEquivJudge:
+    """The judge-fallback merge lane (EQUIV_PLAN.md): opt-in, both-orders,
+    conservative, counted."""
+
+    SIGMA = r"\boxed{\sigma_1 + \sigma_2}"
+    ESS = r"\boxed{s_1 + s_2}"  # same intent, CAS refuses (different symbols)
+
+    @staticmethod
+    def judge_yes(_user: str) -> str:
+        return "These denote the same quantities.\nJudgement: Yes"
+
+    def test_judge_merges_cas_refused_pair(self, fake_endpoint):
+        from mathx.engine import EQUIV_JUDGE_SYSTEM
+
+        ep = fake_endpoint([self.SIGMA, self.SIGMA, self.ESS],
+                           by_system={EQUIV_JUDGE_SYSTEM: self.judge_yes})
+        r = _solve(k=3, equiv_judge_model="judge-model")
+        assert r.margin == "3/3"
+        assert r.judge_merges == 1
+        assert len(r.votes) == 1
+        judge_reqs = [q for q in ep.requests if q["messages"][0]["content"] == EQUIV_JUDGE_SYSTEM]
+        assert len(judge_reqs) == 2  # both presentation orders
+        assert all(q["model"] == "judge-model" for q in judge_reqs)
+
+    def test_both_orders_must_agree(self, fake_endpoint):
+        from mathx.engine import EQUIV_JUDGE_SYSTEM
+
+        def order_biased(user: str) -> str:
+            first = user.split("Expression 1:\n")[1].split("\n")[0]
+            verdict = "Yes" if "sigma" in first else "No"
+            return f"Judgement: {verdict}"
+
+        fake_endpoint([self.SIGMA, self.SIGMA, self.ESS],
+                      by_system={EQUIV_JUDGE_SYSTEM: order_biased})
+        r = _solve(k=3, equiv_judge_model="judge-model")
+        assert r.judge_merges == 0
+        assert r.margin == "2/3"
+
+    def test_unparseable_judgement_means_different(self, fake_endpoint):
+        from mathx.engine import EQUIV_JUDGE_SYSTEM
+
+        fake_endpoint([self.SIGMA, self.SIGMA, self.ESS],
+                      by_system={EQUIV_JUDGE_SYSTEM: "hmm, hard to say, probably fine"})
+        r = _solve(k=3, equiv_judge_model="judge-model")
+        assert r.judge_merges == 0
+
+    def test_off_by_default(self, fake_endpoint):
+        from mathx.engine import EQUIV_JUDGE_SYSTEM
+
+        ep = fake_endpoint([self.SIGMA, self.SIGMA, self.ESS])
+        r = _solve(k=3)
+        assert r.judge_merges == 0
+        assert r.margin == "2/3"
+        assert not any(q["messages"][0]["content"] == EQUIV_JUDGE_SYSTEM for q in ep.requests)
+
+    def test_serialized_and_displayed(self, fake_endpoint):
+        from mathx.engine import EQUIV_JUDGE_SYSTEM, result_to_dict
+        from mathx.report import render_report
+
+        fake_endpoint([self.SIGMA, self.SIGMA, self.ESS],
+                      by_system={EQUIV_JUDGE_SYSTEM: self.judge_yes})
+        d = result_to_dict(_solve(k=3, equiv_judge_model="judge-model"))
+        assert d["judge_merges"] == 1
+        assert "judge merges: 1" in render_report(d)
+
+
 class TestConcurrencyCap:
     def test_unset_and_invalid_mean_unlimited(self, monkeypatch):
         from mathx.engine import concurrency_cap

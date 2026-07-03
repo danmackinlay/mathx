@@ -40,6 +40,7 @@ from pathlib import Path
 PROFILE_KEYS = {
     "model",
     "meta_model",
+    "equiv_judge_model",
     "base_url",
     "api_key_env",
     "temperature",

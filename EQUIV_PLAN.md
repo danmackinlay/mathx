@@ -56,3 +56,23 @@ Mechanics and honesty constraints:
   σ-vs-s residue remains post-fix). Survey agent dispatched: xVerify, Omni-Judge,
   simple-evals equality template, NeMo-Skills judge, math-verify's own roadmap, lighteval /
   lm-eval-harness, arXiv 2604.22597. Adopt-vs-crib-vs-build decision pending its report.
+- **2026-07-03 (survey verdict: build, cribbing prompts)** — Nothing off-the-shelf is
+  pairwise: xVerify (CC-BY-NC-ND, license-blocked), Omni-Judge (2024-frozen; the Omni-MATH-2
+  audit found it wrong in 96% of disagreement cases — exactly the CAS-residue regime),
+  CompassVerifier (Apache-2.0, strongest trained option, but response-vs-gold; noted as a
+  future dedicated-judge model, and its VerifierBench as a validation set). math-verify
+  explicitly declined LLM-judge hooks (issue #58). The judge prompt cribs simple-evals'
+  MIT EQUALITY_TEMPLATE (symmetric Expression 1/2 framing) + NeMo-Skills' problem-context and
+  Judgement-line format + arXiv 2604.22597's order-bias hygiene (both presentation orders
+  must independently say Yes).
+- **2026-07-03 (lenient CAS tier rejected on evidence)** — the survey's suggested free win,
+  `verify(strict=False)` (positional variable matching), merged NOTHING on the live σ-vs-s
+  residue (those variants differ by renaming *plus* form) while happily merging `\mu_1` with
+  `\mu_2` (over-merge hazard). Skipped. What WAS adopted from the survey at the CAS tier:
+  verify() is asymmetric, so both directions are now checked.
+- **2026-07-03 (built)** — engine: `_cluster`/`_tally` refactor with exact→cas(both-ways)→
+  judge tiers; `_judge_merge_pass` (top-3 clusters as merge targets, pair-cached across
+  escalation rounds, sequential calls); `Result.judge_merges` counted, serialized, and
+  labelled in `show`/CLI margins. Opt-in via `--equiv-judge-model` / profile
+  `equiv_judge_model`. Check's grade lane unaffected; `show`'s agreement marks stay CAS-only
+  (a pure reader must not make network calls).

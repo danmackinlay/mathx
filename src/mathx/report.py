@@ -18,7 +18,8 @@ def _equiv(a: str, b: str) -> bool:
     if a == b:
         return True
     try:
-        return bool(verify(parse_answer(a), parse_answer(b)))
+        pa, pb = parse_answer(a), parse_answer(b)
+        return bool(verify(pa, pb) or verify(pb, pa))  # verify() is asymmetric
     except Exception:
         return False
 
@@ -50,6 +51,8 @@ def render_report(run: dict) -> str:
     )
     if run.get("escalations"):
         meta += f"   escalations: {run['escalations']}"
+    if run.get("judge_merges"):
+        meta += f"   judge merges: {run['judge_merges']} (LLM-judged equivalence, weaker than CAS)"
     lines.append(meta)
     lines.append(
         f"tokens: in={run.get('tokens_in_total', 0)} out={run.get('tokens_out_total', 0)}   "

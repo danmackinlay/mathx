@@ -190,6 +190,7 @@ async def run_job(job_id: str) -> dict:
                 top_p=args.get("top_p"),
                 extra_body=args.get("extra_body"),
                 max_retries=args.get("max_retries"),
+                equiv_judge_model=args.get("equiv_judge_model"),
             )
             payload = result_to_dict(result)
         else:
