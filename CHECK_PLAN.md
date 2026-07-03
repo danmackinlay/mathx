@@ -151,3 +151,11 @@ process identity between `run()` calls outside a `Session`.
   lane 2 (literal multi-turn TIR driver + `Executor.session()`), remote executor backends,
   an MCP `submit_check` tool (Stage-5 face work), and the consistency lane as a first-class
   `check` flag (it's just `mathx solve` on the restated claim; call it manually meanwhile).
+- **2026-07-03 (compatibility review)** — Reviewed against the three model regimes (pure CoT /
+  CoT+critique / CoT+TIR) and against host-agent execution; conclusions pinned as ROADMAP
+  *Invariants* rather than re-argued here. Stage-3-specific notes: the grade lane is plain CoT
+  (protocol failures land in the abstain bucket, visibly); TIR-native models gain nothing at
+  check time until lane 2 exists — and once the lane-2 driver is built for checking,
+  solver-side TIR becomes a policy decision, not engineering. If regime-mixing *within* one
+  check call is ever needed, it's a pair of small flags (`--tir-model`/`--grade-model`), not a
+  redesign.

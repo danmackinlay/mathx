@@ -29,6 +29,14 @@ Strategic pivot: grow the workstation **around a persistent job store**, not by 
 
 Honesty constraint: verdicts are evidence, not certainty. The display must carry epistemic status ("checked on 200 random instances" ≠ "proven"). Human stays the judge; the harness organizes evidence. That's the feature, not the limitation.
 
+## Invariants (pinned 2026-07-03 — drift guards)
+
+Every stage must preserve these three. A proposed change that breaks one is the signal to stop and rethink — this is where pudding drifted.
+
+1. **The model is a text-in/text-out sampler.** Everything beyond pure CoT — judge passes, grading, checker scripts, (later) literal TIR — is an optional lane/strategy selected per call. Pure-CoT models run every stage, degrading *visibly* (abstains, weaker margins), never silently. Regimes mix per invocation: solver, grader, and checker models may differ.
+2. **The loop has three homes, all clients of the same primitives.** (a) A host agent driving CLI/MCP verbs (Claude Desktop/Code — works now, maximum exploratory flexibility); (b) the Stage-4 mathx verb; (c) `solve()`/`check()` imported into custom Python. Stage 4 is built ON submit/check/jobs, never around them — a loop that bypasses the primitives demotes the other two homes.
+3. **Every unit of work is a persistent, self-describing record.** A run/verdict is a job file carrying inputs, evidence, and audit trail; nothing encodes who drove the loop. The Stage-4 claim ledger is therefore itself a file (claim tree → job ids), so a loop started in one home can be inspected, challenged, and resumed from another.
+
 ## Staged roadmap
 
 **Stage 1 — display what's already computed** (pure reader) — ✅ done
@@ -48,6 +56,7 @@ Honesty constraint: verdicts are evidence, not certainty. The display must carry
 
 **Stage 5 — the face**
 - MCP registration in Open WebUI (free after Stage 2); optionally a Pipeline that owns the loop and streams claim-ledger progress. A ledger TUI/web view once the loop earns it.
+- MCP surface additions owed by Stages 3–4: `submit_check`, a jobs-list tool, and the `check_solve` naming tidy-up (it means "poll a job", which stops being obvious once claim checks exist).
 
 **Cross-cutting prerequisite** — ✅ done: pytest suite in `tests/` with a mocked OpenAI-compatible endpoint (httpx `MockTransport` under the real openai client — full wire path, no network); covers the pure helpers, `solve()` incl. escalation, the report renderers, and both CLI verbs. `uv run pytest`.
 

@@ -158,6 +158,28 @@ The overall status is `supported` / `refuted` / `conflict` / `unclear` (exit cod
 lands in the JSON record. `mathx show <run>` renders it; `--script N` prints a checker
 script and its output, `--sample N` a grader's reasoning. `MATHX_EXECUTOR` picks where
 checker scripts run (only `local` today; remote sandbox backends are planned).
+
+## Design invariants
+
+Three properties hold across every surface; they are pinned in [ROADMAP.md](ROADMAP.md) so
+feature work can't erode them:
+
+- **Any CoT model is enough.** mathx treats the model as text-in/text-out; judge passes
+  (`self_verify`), TRUE/FALSE grading, and checker scripts are optional lanes chosen per call.
+  A pure-CoT specialist runs everything (switch off lanes it's bad at — failures surface as
+  abstains, never silently); critique-tuned models sharpen the grading lanes; TIR-native
+  models currently solve in CoT mode (a literal TIR driver is a planned upgrade — see
+  [CHECK_PLAN.md](CHECK_PLAN.md)). Regimes mix freely across calls: solver, grader, and
+  checker models may differ.
+- **The loop has three homes.** A tool-capable agent can drive the whole workflow itself via
+  the CLI or MCP verbs — submit/status/check return instantly, so Claude Desktop or Claude
+  Code can orchestrate a fan-out conversationally; a built-in decompose–check–refine verb is
+  Stage 4 of the roadmap; and Python harnesses import `solve(...)`/`check(...)` directly for
+  fully custom loops. All three read and write the same job store.
+- **Everything is a record.** Runs and verdicts are self-describing JSON files carrying their
+  full audit trail; verdicts state their epistemic status ("held on 200 random instances" ≠
+  proven); and no record encodes who drove the loop — work started from one surface can be
+  inspected, challenged, and resumed from another.
 The shipped `SKILL.md` teaches the agent when to dispatch and how to
 interpret the margin; `npx skills add danmackinlay/mathx` wires it into the agent's skills
 directory (see *Install*).
