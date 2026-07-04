@@ -288,7 +288,11 @@ class TestEquivJudge:
                       by_system={EQUIV_JUDGE_SYSTEM: self.judge_yes})
         d = result_to_dict(_solve(k=3, equiv_judge_model="judge-model"))
         assert d["judge_merges"] == 1
-        assert "judge merges: 1" in render_report(d)
+        bases = [s["merge_basis"] for s in d["samples"]]
+        assert sorted(bases) == ["exact", "exact", "judge"]  # rep, exact-dup, judge-merged
+        report = render_report(d)
+        assert "judge merges: 1" in report
+        assert "≈" in report  # the judge-merged voter is marked, not shown as dissent
 
 
 class TestConcurrencyCap:
@@ -338,6 +342,7 @@ class TestResultToDict:
                 "boxed": "42",
                 "confidence": None,
                 "error": None,
+                "merge_basis": None,
                 "tokens_in": 1,
                 "tokens_out": 2,
                 "elapsed_ms": 3,

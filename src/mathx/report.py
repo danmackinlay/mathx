@@ -69,7 +69,10 @@ def render_report(run: dict) -> str:
 
     if samples:
         lines.append("")
-        lines.append("samples (✓ votes with winner; `--sample N` prints full reasoning):")
+        legend = "✓ votes with winner"
+        if run.get("judge_merges"):
+            legend += "; ≈ counted into a larger cluster by the equivalence judge"
+        lines.append(f"samples ({legend}; `--sample N` prints full reasoning):")
         for i, s in enumerate(samples):
             boxed = s.get("boxed")
             if s.get("error"):
@@ -78,6 +81,8 @@ def render_report(run: dict) -> str:
                 mark, shown = "·", "(no \\boxed{...} answer)"
             elif answer is not None and _equiv(boxed, answer):
                 mark, shown = "✓", _one_line(boxed, 50)
+            elif s.get("merge_basis") == "judge":
+                mark, shown = "≈", _one_line(boxed, 50)
             else:
                 mark, shown = "✗", _one_line(boxed, 50)
             conf = s.get("confidence")

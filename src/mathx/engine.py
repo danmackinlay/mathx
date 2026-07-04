@@ -48,6 +48,7 @@ class Sample:
     boxed: str | None
     confidence: float | None = None
     error: str | None = None
+    merge_basis: str | None = None  # how the vote placed it: exact | cas | judge
     tokens_in: int = 0
     tokens_out: int = 0
     elapsed_ms: int = 0
@@ -243,12 +244,14 @@ def _cluster(samples: list[Sample]) -> list[dict]:
         for c in clusters:
             if c["rep"] == s.boxed:
                 placed = True
+                s.merge_basis = "exact"
             else:
                 try:
                     if parsed is None:
                         parsed = parse_answer(s.boxed)
                     if verify(c["parsed"], parsed) or verify(parsed, c["parsed"]):
                         placed = True
+                        s.merge_basis = "cas"
                 except Exception:
                     # math-verify can throw on weird inputs; treat as non-equivalent
                     pass
@@ -257,6 +260,7 @@ def _cluster(samples: list[Sample]) -> list[dict]:
                 c["members"].append(s)
                 break
         if not placed:
+            s.merge_basis = "exact"  # a cluster's founding member is its own rep
             try:
                 parsed = parsed if parsed is not None else parse_answer(s.boxed)
             except Exception:
@@ -343,6 +347,8 @@ async def _judge_merge_pass(
                 )
                 cache[(other["rep"], target["rep"])] = cache[key]
             if cache[key]:
+                for member in other["members"]:
+                    member.merge_basis = "judge"
                 target["weight"] += other["weight"]
                 target["members"].extend(other["members"])
                 target["judge_merges"] += len(other["members"])
@@ -482,6 +488,7 @@ def sample_to_dict(s: Sample) -> dict:
         "boxed": s.boxed,
         "confidence": s.confidence,
         "error": s.error,
+        "merge_basis": s.merge_basis,
         "tokens_in": s.tokens_in,
         "tokens_out": s.tokens_out,
         "elapsed_ms": s.elapsed_ms,
