@@ -61,6 +61,17 @@ class TestClaimState:
 
         jobs.finalize(job_id, result={"kind": "check", "status": "supported", "summary": "s — g"})
         assert ledger.claim_state(claim) == ("supported", "s — g")
+
+    def test_detail_does_not_repeat_the_status(self):
+        led = make_ledger()
+        claim = ledger.add_claim(led, "x", round_added=0)
+        job_id = ledger.attach_check(led, claim, api_key="k", round_=0, spawn=lambda *a, **k: None)
+        jobs.finalize(
+            job_id,
+            result={"kind": "check", "status": "refuted",
+                    "summary": "refuted — tir: fail (1 script) · grade: false (2/2)"},
+        )
+        assert ledger.claim_state(claim) == ("refuted", "tir: fail (1 script) · grade: false (2/2)")
         # persisted: a fresh read sees the verdict reference
         assert ledger.read(led["ledger_id"])["claims"][0]["verdicts"][0]["job_id"] == job_id
 

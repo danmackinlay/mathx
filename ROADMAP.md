@@ -55,8 +55,9 @@ Every stage must preserve these three. A proposed change that breaks one is the 
 - Interactive verbs shipped: `mathx ledger recheck` (higher k), `challenge` (objection in the prompt), `expand` (checked sub-claims, one tree level); all accept `--model` overrides (regime mixing).
 
 **Stage 5 — the face**
-- MCP registration in Open WebUI (free after Stage 2); optionally a Pipeline that owns the loop and streams claim-ledger progress. A ledger TUI/web view once the loop earns it.
-- MCP surface additions owed by Stages 3–4: `submit_check`, a jobs-list tool, and the `check_solve` naming tidy-up (it means "poll a job", which stops being obvious once claim checks exist).
+- Open WebUI: the **Pipe is the primary integration**, not MCP (decided 2026-07-04). A Pipe owns the loop in code (invariant-2 home (c)), maps `argue`'s `on_event` onto OWUI's event emitter for live ledger progress, and works regardless of the served model's tool-calling competence — whereas OWUI's chat-tool loop would put the served model in charge of polling a long handle, which specialists (VibeThinker) can't do at all. MCP registration in OWUI remains a free extra for ad-hoc oracle calls with generalist models.
+- MCP surface additions owed by Stages 3–4 — `submit_check`, a jobs-list tool, the `check_solve` naming tidy-up, argue/ledger tools, profile support — now motivated by the Claude Desktop/Cursor-family clients, not OWUI.
+- A ledger TUI/web view once the loop earns it.
 
 **Cross-cutting prerequisite** — ✅ done: pytest suite in `tests/` with a mocked OpenAI-compatible endpoint (httpx `MockTransport` under the real openai client — full wire path, no network); covers the pure helpers, `solve()` incl. escalation, the report renderers, and both CLI verbs. `uv run pytest`.
 

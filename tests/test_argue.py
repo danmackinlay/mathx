@@ -107,6 +107,18 @@ class TestArgue:
         assert ledger.claim_state(good)[0] == "supported"
         assert len(led["scratchpad"]) == 1
         assert "BAD" in led["scratchpad"][0]["claim"]
+        # terse: the note must not re-state the verdict word (tokens re-enter every refine prompt)
+        assert not led["scratchpad"][0]["note"].startswith("refuted")
+
+    def test_scratchpad_prefers_the_counterexample(self, fake_endpoint, inline_workers):
+        from mathx.check import CHECKER_SYSTEM
+
+        fake_endpoint(by_system={
+            DECOMPOSER_SYSTEM: decomp("Claim WRONG holds."),
+            CHECKER_SYSTEM: '```python\nprint("COUNTEREXAMPLE: n=5 breaks it")\nprint("VERDICT: FAIL")\n```',
+        })
+        led = run_argue(rounds=0, tir_k=1, grade_k=0)
+        assert led["scratchpad"][0]["note"] == "n=5 breaks it"
 
     def test_verbatim_claims_keep_verdicts_across_rounds(self, fake_endpoint, inline_workers):
         fake_endpoint(by_system={

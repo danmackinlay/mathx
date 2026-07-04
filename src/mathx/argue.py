@@ -79,6 +79,22 @@ def _norm(text: str) -> str:
     return " ".join(text.split())
 
 
+def _scratch_note(claim: dict) -> str:
+    """The densest morsel for the refiner: a concrete counterexample beats a
+    lane summary. Truncated — scratchpad text re-enters every refine prompt."""
+    for verdict in reversed(claim.get("verdicts") or []):
+        try:
+            result = jobs.read(verdict["job_id"]).get("result") or {}
+        except KeyError:
+            continue
+        for run in result.get("tir") or []:
+            if run.get("verdict") == "fail" and run.get("note"):
+                return _norm(run["note"])[:120]
+        break
+    _, detail = ledger.claim_state(claim)
+    return _norm(detail)[:120]
+
+
 async def _decompose(
     client, model, user, *, temperature, max_tokens, emit, transcript: list | None = None
 ) -> tuple[str, list[str]]:
@@ -231,9 +247,11 @@ async def argue(
         unsupported = []
         pad_seen = {_norm(e["claim"]) for e in led["scratchpad"]}
         for claim in current:
-            state, detail = ledger.claim_state(claim)
+            state, _ = ledger.claim_state(claim)
             if state in ("refuted", "conflict") and _norm(claim["text"]) not in pad_seen:
-                led["scratchpad"].append({"round": rnd, "claim": claim["text"], "note": detail})
+                led["scratchpad"].append(
+                    {"round": rnd, "claim": claim["text"], "note": _scratch_note(claim)}
+                )
             if state != "supported":
                 unsupported.append(claim)
         ledger.save(led)

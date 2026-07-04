@@ -172,7 +172,12 @@ def claim_state(claim: dict) -> tuple[str, str]:
     if record.get("status") == "error":
         return "error", record.get("error") or ""
     result = record.get("result") or {}
-    return result.get("status", "error"), result.get("summary", "")
+    status = result.get("status", "error")
+    detail = result.get("summary", "")
+    prefix = f"{status} — "
+    if detail.startswith(prefix):
+        detail = detail[len(prefix):]  # the status is reported separately; don't say it twice
+    return status, detail
 
 
 def state_counts(led: dict) -> dict[str, int]:
