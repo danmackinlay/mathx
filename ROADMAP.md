@@ -2,7 +2,7 @@
 
 ## Context
 
-mathx today is a thin maj@k oracle: CLI + SKILL.md, MCP deferred (see [MCP_PLAN.md](MCP_PLAN.md)). The goal is to grow it gradually into a **solver workstation** — the solver-side equivalent of [AxProverBase](https://github.com/Axiomatic-AI/ax-prover-base): a harness for interactively exploring mathematical arguments in human-readable form, with *soft* verification (TIR checks, claim-level self-grading, fan-out consistency) instead of a Lean compiler. Explicitly not the prover path — AxProverBase owns that end.
+mathx began as a thin maj@k oracle: CLI + SKILL.md, MCP deferred (design notes: [DESIGN_NOTES.md](DESIGN_NOTES.md#mcp-server)). The goal was to grow it gradually into a **solver workstation** — the solver-side equivalent of [AxProverBase](https://github.com/Axiomatic-AI/ax-prover-base): a harness for interactively exploring mathematical arguments in human-readable form, with *soft* verification (TIR checks, claim-level self-grading, fan-out consistency) instead of a Lean compiler. Explicitly not the prover path — AxProverBase owns that end.
 
 Background: [automatic_maths](https://danmackinlay.name/notebook/automatic_maths) and [ai_reasoning](https://danmackinlay.name/notebook/ai_reasoning).
 
@@ -10,7 +10,7 @@ Background: [automatic_maths](https://danmackinlay.name/notebook/automatic_maths
 
 1. `solve()` in [src/mathx/engine.py](src/mathx/engine.py) is already async (`asyncio.gather` over k samples).
 2. Every run already serializes to a complete JSON audit record (`result_to_dict`: answer, margin, votes, per-sample traces).
-3. [MCP_PLAN.md](MCP_PLAN.md) already designs the async-handle pattern (submit/check + file-per-job store).
+3. The [MCP design notes](DESIGN_NOTES.md#mcp-server) already design the async-handle pattern (submit/check + file-per-job store).
 4. Crucially: `math_verify`-based equivalence checking in `_cluster_and_vote` is already a *claim-checker primitive* — the oracle can become the inner call of a claim-level loop without changing identity.
 
 Strategic pivot: grow the workstation **around a persistent job store**, not by bloating the engine. One-shot CLI calls become named, inspectable runs; every surface (CLI report, MCP `poll_job`, Open WebUI) is just a reader of the same files.
@@ -43,14 +43,14 @@ Every stage must preserve these three. A proposed change that breaks one is the 
 - `mathx show <run.json>`: vote histogram, margin, per-sample answers, disagreement surfacing (`src/mathx/report.py`).
 - Live progress during solve (`--progress`, on by default on a TTY); auto-escalation on weak margin via `--max-k` (no strict majority → double k, re-vote over all samples, repeat up to the cap).
 
-**Stage 2 — job store + async handles** (implement [MCP_PLAN.md](MCP_PLAN.md)) — ✅ done
+**Stage 2 — job store + async handles** (design: [DESIGN_NOTES.md](DESIGN_NOTES.md#mcp-server)) — ✅ done
 - File-per-job store (`src/mathx/jobs.py`, `$MATHX_JOBS_DIR` / `~/.cache/mathx/jobs`) → `submit`/`status`/`jobs` CLI verbs; MCP server `mathx mcp-serve` (`submit_solve`/`poll_job`, `src/mathx/mcp_server.py`). Both submit paths detach the same worker (`python -m mathx.jobs <id>`), so jobs survive their submitter. Runs get identity and history — the substrate every later surface reads.
 
-**Stage 3 — claim-checker primitive** (design: [CHECK_PLAN.md](CHECK_PLAN.md)) — ✅ done
+**Stage 3 — claim-checker primitive** (design: [DESIGN_NOTES.md](DESIGN_NOTES.md#claim-checker-mathx-check)) — ✅ done
 - `mathx check "<claim>"` (`src/mathx/check.py`): two concurrent verdict lanes — `tir` (model writes a SymPy verification script; the `Executor` seam in `src/mathx/executor.py` runs it locally and parses VERDICT/COUNTEREXAMPLE from stdout) and `grade` (k-sample TRUE/FALSE vote). Status: supported / refuted / conflict / unclear; full audit trail (code, output, reasoning) in the record; `mathx submit --check` runs it through the Stage-2 job store; `mathx show` renders verdict records (`--script N` for checker code+output).
 - 2026-07 survey result: literal multi-turn TIR is viable on existing endpoints (Featherless serves `/v1/completions`; OpenMath-Nemotron/Nemotron-Math are TIR-native, CC-BY-4.0) — deferred as the upgrade lane behind the same interface. Remote executors (E2B/Daytona/Modal) deferred behind the `Executor` seam.
 
-**Stage 4 — the decompose–check–refine loop** (the actual AxProverBase-equivalent; design: [LOOP_PLAN.md](LOOP_PLAN.md)) — ✅ done
+**Stage 4 — the decompose–check–refine loop** (the actual AxProverBase-equivalent; design: [DESIGN_NOTES.md](DESIGN_NOTES.md#decompose-check-refine-loop-mathx-argue)) — ✅ done
 - `mathx argue` (`src/mathx/argue.py`): decompose into self-contained claims (generalist call) → Stage-3 check job per claim via the Stage-2 store → refine from failed verdicts + scratchpad of refuted claims, up to `--rounds`. The claim ledger (`src/mathx/ledger.py`) is a persistent file (claim tree → job ids); state derived live from the job store; `mathx show <ledger_id>` renders badges.
 - Interactive verbs shipped: `mathx ledger recheck` (higher k), `challenge` (objection in the prompt), `expand` (checked sub-claims, one tree level); all accept `--model` overrides (regime mixing).
 
@@ -61,6 +61,6 @@ Every stage must preserve these three. A proposed change that breaks one is the 
 
 **Cross-cutting prerequisite** — ✅ done: pytest suite in `tests/` with a mocked OpenAI-compatible endpoint (httpx `MockTransport` under the real openai client — full wire path, no network); covers the pure helpers, `solve()` incl. escalation, the report renderers, and both CLI verbs. `uv run pytest`.
 
-**Cross-cutting: answer equivalence** (design: [EQUIV_PLAN.md](EQUIV_PLAN.md)) — ✅ done: the vote's core primitive is CAS-first (math-verify) with an opt-in labelled LLM judge-fallback for the residue (variable renaming, forms the CAS refuses). The survey favoured build-cribbing-prompts over adopting a trained judge; `--equiv-judge-model` / profile `equiv_judge_model`.
+**Cross-cutting: answer equivalence** (design: [DESIGN_NOTES.md](DESIGN_NOTES.md#answer-equivalence-cas-first-judge-fallback)) — ✅ done: the vote's core primitive is CAS-first (math-verify) with an opt-in labelled LLM judge-fallback for the residue (variable renaming, forms the CAS refuses). The survey favoured build-cribbing-prompts over adopting a trained judge; `--equiv-judge-model` / profile `equiv_judge_model`.
 
 Every stage is independently useful, and the oracle never stops being the thin swappable thing — it just gets called per claim instead of per problem.

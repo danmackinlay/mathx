@@ -44,7 +44,7 @@ the right command if either is missing.
 MCP server: `mathx mcp-serve` (stdio) — handle/poll tools (`submit_solve` / `submit_check` /
 `submit_argue` / `poll_job` / `list_jobs`, plus ledger tools `get_ledger` / `list_ledgers` /
 `recheck_claim` / `challenge_claim`), all instant-return so no client tool-call timeout ever
-bites; per-client wiring snippets are in [`MCP_PLAN.md`](MCP_PLAN.md).
+bites; per-client wiring snippets are in [`DESIGN_NOTES.md`](DESIGN_NOTES.md#mcp-server).
 **Open WebUI** gets the Pipe instead — the loop runs in mathx code and streams ledger
 progress into chat, independent of the served model's tool-calling ability:
 [`integrations/openwebui/`](integrations/openwebui/).
@@ -112,7 +112,7 @@ while you test.
 - Not a *solver-side* TIR sandbox: `mathx solve` never executes solver code — the calling agent
   has its own Python. (`mathx check` *does* execute model-written **checker** scripts, in a
   hygiene-sandboxed local subprocess — timeout, fresh cwd, capped output. That is deliberately
-  not called a security boundary; see [CHECK_PLAN.md](CHECK_PLAN.md) for the honest framing and
+  not called a security boundary; see [DESIGN_NOTES.md](DESIGN_NOTES.md#claim-checker-mathx-check) for the honest framing and
   the planned remote-isolation backends.)
 - Not a provider registry. One OpenAI-compatible client plus flags; named profiles in
   `mathx.toml` only bundle those same flags (zero provider-specific code — dialect extras
@@ -177,7 +177,7 @@ disk; workers read it from the environment.
 
 ## Checking claims
 
-`mathx check` is the claim-level primitive (design: [CHECK_PLAN.md](CHECK_PLAN.md)) — verdict
+`mathx check` is the claim-level primitive (design: [DESIGN_NOTES.md](DESIGN_NOTES.md#claim-checker-mathx-check)) — verdict
 plus evidence, never proof:
 
 ```bash
@@ -203,7 +203,7 @@ checker scripts run (only `local` today; remote sandbox backends are planned).
 
 ## Building an argument
 
-`mathx argue` runs the decompose–check–refine loop (design: [LOOP_PLAN.md](LOOP_PLAN.md)):
+`mathx argue` runs the decompose–check–refine loop (design: [DESIGN_NOTES.md](DESIGN_NOTES.md#decompose-check-refine-loop-mathx-argue)):
 
 ```bash
 mathx argue "Show that the sum of the first n odd numbers is n^2."
@@ -389,7 +389,7 @@ Either use such a model with `--strategy cot --k 1`, or specify higher temperatu
 - **The MCP server** ships: `mathx mcp-serve` (stdio) exposes the full submit/poll/ledger
   surface (`submit_solve` / `submit_check` / `submit_argue` / `poll_job` / `list_jobs`, plus
   the ledger tools) over the same job store as the CLI verbs. The handle/poll-vs-MCP-Tasks
-  reasoning and per-client wiring snippets are in [`MCP_PLAN.md`](MCP_PLAN.md).
+  reasoning and per-client wiring snippets are in [`DESIGN_NOTES.md`](DESIGN_NOTES.md#mcp-server).
 
 ## Privacy
 
