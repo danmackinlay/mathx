@@ -13,7 +13,7 @@ Background: [automatic_maths](https://danmackinlay.name/notebook/automatic_maths
 3. [MCP_PLAN.md](MCP_PLAN.md) already designs the async-handle pattern (submit/check + file-per-job store).
 4. Crucially: `math_verify`-based equivalence checking in `_cluster_and_vote` is already a *claim-checker primitive* — the oracle can become the inner call of a claim-level loop without changing identity.
 
-Strategic pivot: grow the workstation **around a persistent job store**, not by bloating the engine. One-shot CLI calls become named, inspectable runs; every surface (CLI report, MCP `check_solve`, Open WebUI) is just a reader of the same files.
+Strategic pivot: grow the workstation **around a persistent job store**, not by bloating the engine. One-shot CLI calls become named, inspectable runs; every surface (CLI report, MCP `poll_job`, Open WebUI) is just a reader of the same files.
 
 ## The solver equivalent of AxProverBase (design sketch)
 
@@ -44,7 +44,7 @@ Every stage must preserve these three. A proposed change that breaks one is the 
 - Live progress during solve (`--progress`, on by default on a TTY); auto-escalation on weak margin via `--max-k` (no strict majority → double k, re-vote over all samples, repeat up to the cap).
 
 **Stage 2 — job store + async handles** (implement [MCP_PLAN.md](MCP_PLAN.md)) — ✅ done
-- File-per-job store (`src/mathx/jobs.py`, `$MATHX_JOBS_DIR` / `~/.cache/mathx/jobs`) → `submit`/`status`/`jobs` CLI verbs; MCP server `mathx mcp-serve` (`submit_solve`/`check_solve`, `src/mathx/mcp_server.py`). Both submit paths detach the same worker (`python -m mathx.jobs <id>`), so jobs survive their submitter. Runs get identity and history — the substrate every later surface reads.
+- File-per-job store (`src/mathx/jobs.py`, `$MATHX_JOBS_DIR` / `~/.cache/mathx/jobs`) → `submit`/`status`/`jobs` CLI verbs; MCP server `mathx mcp-serve` (`submit_solve`/`poll_job`, `src/mathx/mcp_server.py`). Both submit paths detach the same worker (`python -m mathx.jobs <id>`), so jobs survive their submitter. Runs get identity and history — the substrate every later surface reads.
 
 **Stage 3 — claim-checker primitive** (design: [CHECK_PLAN.md](CHECK_PLAN.md)) — ✅ done
 - `mathx check "<claim>"` (`src/mathx/check.py`): two concurrent verdict lanes — `tir` (model writes a SymPy verification script; the `Executor` seam in `src/mathx/executor.py` runs it locally and parses VERDICT/COUNTEREXAMPLE from stdout) and `grade` (k-sample TRUE/FALSE vote). Status: supported / refuted / conflict / unclear; full audit trail (code, output, reasoning) in the record; `mathx submit --check` runs it through the Stage-2 job store; `mathx show` renders verdict records (`--script N` for checker code+output).
