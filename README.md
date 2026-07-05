@@ -306,7 +306,8 @@ The shipped `SKILL.md` teaches the agent when to dispatch and how to interpret t
 
 ```
 src/mathx/
-  engine.py       sample, judge, cluster-and-vote, solve(); the maths logic
+  engine.py       sample, judge, cluster + tally, solve(); the maths logic
+  config.py       ProviderConfig: the endpoint bundle every layer shares (resolve_provider, to_args/from_args)
   check.py        claim checking: tir script lane + grade vote lane (`mathx check`)
   executor.py     where checker code runs: local subprocess today, remote seam for later
   argue.py        decompose–check–refine loop (`mathx argue`) + claim expansion
