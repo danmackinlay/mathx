@@ -1,20 +1,11 @@
-# Stage 3 plan: `mathx check` — the claim-checker primitive
+# `mathx check` — claim-checker design notes (shipped)
 
-Design note for ROADMAP Stage 3, in the same spirit as [MCP_PLAN.md](MCP_PLAN.md): capture the
-research and the load-bearing decisions before building, so the build doesn't re-derive them.
-Written 2026-07-03 from a model-landscape survey; sources in the decision log.
-
-## What it is
-
-```bash
-mathx check "<claim>"        # e.g. "for all n≥1, 2^n > n^2 fails only for n∈{2,3,4}"
-```
-
-Claim in; **verdict + evidence** out. This is the atom of the Stage-4 decompose–check–refine
-loop: the oracle stops being called per *problem* and starts being called per *claim*. Verdicts
-are evidence, not certainty — every verdict record must carry its epistemic status ("SymPy
-symbolic equality", "held on 200 random instances", "12/16 self-grades agree"), never a bare
-true/false.
+Stage 3 shipped `mathx check "<claim>"` — claim in, **verdict + evidence** out, the atom of the
+Stage-4 decompose–check–refine loop (README's *Checking claims* has the usage). Verdicts are
+evidence, not certainty — every record carries its epistemic status ("SymPy symbolic equality",
+"held on 200 random instances", "12/16 self-grades agree"), never a bare true/false. This note
+is kept for what the build deferred: the 2026-07 model-landscape survey behind the TIR lanes and
+the executor seam. Sources in the decision log.
 
 ## The verdict stack
 
@@ -114,16 +105,6 @@ output comes back, and the round-trip is noise against generation time.
 What the seam must NOT assume, so the remote backends stay honest implementations of it:
 no shared filesystem with the caller, no ambient network access for the checked code, no
 process identity between `run()` calls outside a `Session`.
-
-## Consequences elsewhere
-
-- README's "**Not a TIR sandbox**" line dies when this ships: claim-checking executes
-  model-written code, which is a sandbox whether we like it or not. The "calling agent has its
-  own Python" argument covered *solving*; it never covered *checking* — the point of a verdict
-  is that the harness, not the solver, ran it.
-- Verdict records go in the job store (Stage 2) like any run: a `check` is a job whose result
-  carries `verdict`, `evidence`, `lane`, and the executed code + output as the audit trail.
-  `mathx show` learns to render verdict records.
 
 ## What stays out
 
