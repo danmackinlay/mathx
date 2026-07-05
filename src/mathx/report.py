@@ -9,9 +9,18 @@ from __future__ import annotations
 
 from math_verify import verify
 
+from mathx.check import SLOW_FRACTION
 from mathx.engine import parse_answer
 
 BAR_WIDTH = 24
+
+
+def _script_is_slow(r: dict, timeout_s: float | None) -> bool:
+    """Dict-shape mirror of ``check.is_slow``: a completed script that ate
+    ≥ SLOW_FRACTION of its wall-clock budget."""
+    if not timeout_s or r.get("timed_out"):
+        return False
+    return r.get("exec_elapsed_ms", 0) >= SLOW_FRACTION * timeout_s * 1000
 
 
 def _equiv(a: str, b: str) -> bool:
@@ -170,13 +179,35 @@ def render_check_report(run: dict) -> str:
     )
 
     tir_runs: list[dict] = run.get("tir") or []
+    ex = run.get("exec") or {}
+    if ex.get("n_scripts"):
+        timeout_s = run.get("exec_timeout_s")
+        line = (
+            f"execution: {ex['n_scripts']} script{'s' if ex['n_scripts'] != 1 else ''}, "
+            f"{ex.get('ms_total', 0)} ms total, slowest {ex.get('ms_max', 0)} ms"
+        )
+        warn = []
+        if ex.get("n_timed_out"):
+            warn.append(f"{ex['n_timed_out']} timed out")
+        if ex.get("n_slow"):
+            budget = f" of {timeout_s:g}s" if timeout_s else ""
+            warn.append(f"{ex['n_slow']} slow (≥{int(SLOW_FRACTION * 100)}%{budget})")
+        if warn:
+            line += "   ⚠ " + " · ".join(warn)
+        lines.append(line)
+
     if tir_runs:
         lines.append("")
         lines.append("tir scripts (`--script N` prints the code and its output):")
+        timeout_s = run.get("exec_timeout_s")
         for i, r in enumerate(tir_runs):
             note = f" — {_one_line(r['note'], 70)}" if r.get("note") else ""
-            timing = "timed out" if r.get("timed_out") else f"{r.get('exec_elapsed_ms', 0)} ms"
-            lines.append(f"  {i:>3}  {r.get('verdict', '?'):<12}  {timing:>9}{note}")
+            if r.get("timed_out"):
+                timing, mark = "timed out", "  ⚠"
+            else:
+                timing = f"{r.get('exec_elapsed_ms', 0)} ms"
+                mark = "  ⚠" if _script_is_slow(r, timeout_s) else ""
+            lines.append(f"  {i:>3}  {r.get('verdict', '?'):<12}  {timing:>9}{mark}{note}")
 
     grade: dict | None = run.get("grade")
     if grade:
@@ -269,7 +300,12 @@ def render_check_script(run: dict, index: int) -> str:
     head = f"script {index}: verdict={r.get('verdict')}"
     if r.get("note"):
         head += f"   note: {r['note']}"
-    head += f"\nexit={r.get('exit_code')}   timed_out={r.get('timed_out')}   {r.get('exec_elapsed_ms', 0)} ms"
+    timeout_s = run.get("exec_timeout_s")
+    budget = f" (budget {timeout_s:g}s)" if timeout_s else ""
+    head += (
+        f"\nexit={r.get('exit_code')}   timed_out={r.get('timed_out')}   "
+        f"{r.get('exec_elapsed_ms', 0)} ms{budget}"
+    )
     parts = [head, "", "--- code ---", r.get("code") or "(no code extracted)"]
     if r.get("stdout"):
         parts += ["", "--- stdout ---", r["stdout"].rstrip()]

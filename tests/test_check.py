@@ -18,6 +18,19 @@ from mathx.check import (
 )
 from mathx.executor import ExecResult
 
+
+class FakeExecutor:
+    """Returns a canned ExecResult, ignoring the code — lets tests drive
+    exec_elapsed_ms / timed_out without real subprocesses."""
+
+    def __init__(self, elapsed_ms: int = 40, timed_out: bool = False):
+        self.elapsed_ms, self.timed_out = elapsed_ms, timed_out
+
+    def run(self, code: str, *, timeout_s: float = 60.0) -> ExecResult:
+        if self.timed_out:
+            return ExecResult("", "", None, True, self.elapsed_ms)
+        return ExecResult("VERDICT: PASS", "", 0, False, self.elapsed_ms)
+
 PASS_SCRIPT = 'reply with:\n```python\nprint("VERDICT: PASS")\n```'
 FAIL_SCRIPT = (
     "```python\n"
@@ -195,6 +208,47 @@ class TestCheck:
     def test_both_lanes_off_rejected(self):
         with pytest.raises(ValueError, match="at least one lane"):
             run_check(tir_k=0, grade_k=0)
+
+
+class TestExecSummary:
+    def test_rollup_totals(self, fake_endpoint):
+        fake_endpoint(by_system={CHECKER_SYSTEM: PASS_SCRIPT})
+        d = check_result_to_dict(
+            run_check(tir_k=3, grade_k=0, executor=FakeExecutor(elapsed_ms=40))
+        )
+        ex = d["exec"]
+        assert ex["n_scripts"] == 3
+        assert ex["ms_total"] == 120 and ex["ms_max"] == 40
+        assert ex["n_timed_out"] == 0 and ex["n_slow"] == 0
+        assert d["exec_timeout_s"] == 60.0
+
+    def test_timeout_counted(self, fake_endpoint):
+        fake_endpoint(by_system={CHECKER_SYSTEM: PASS_SCRIPT})
+        d = check_result_to_dict(
+            run_check(tir_k=1, grade_k=0, exec_timeout_s=2.0,
+                      executor=FakeExecutor(timed_out=True))
+        )
+        assert d["exec"]["n_timed_out"] == 1
+
+    def test_slow_counted(self, fake_endpoint):
+        # 1800 ms ≥ 0.8 × 2000 ms budget → slow, but not timed out
+        fake_endpoint(by_system={CHECKER_SYSTEM: PASS_SCRIPT})
+        d = check_result_to_dict(
+            run_check(tir_k=1, grade_k=0, exec_timeout_s=2.0,
+                      executor=FakeExecutor(elapsed_ms=1800))
+        )
+        assert d["exec"]["n_slow"] == 1 and d["exec"]["n_timed_out"] == 0
+
+    def test_on_script_fires_per_script(self, fake_endpoint):
+        fake_endpoint(by_system={CHECKER_SYSTEM: PASS_SCRIPT})
+        seen: list[tuple[int, int]] = []
+        asyncio.run(
+            check("2+2=4", provider=provider(), tir_k=3, grade_k=0,
+                  executor=FakeExecutor(),
+                  on_script=lambda run, done, planned: seen.append((done, planned)))
+        )
+        assert [d for d, _ in seen] == [1, 2, 3]  # monotonic done
+        assert all(p == 3 for _, p in seen)
 
     def test_serialization_shape(self, fake_endpoint):
         fake_endpoint(by_system={

@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from mathx.config import ProviderConfig
@@ -52,6 +53,11 @@ GRADER_SYSTEM = (
     "\\boxed{FALSE}. If the claim is ambiguous or you cannot decide, end with "
     "\\boxed{UNDECIDED}."
 )
+
+# A script whose execution eats this fraction of its wall-clock budget is
+# flagged "slow" — an early warning for NP-hard / near-non-terminating checkers,
+# short of an outright timeout.
+SLOW_FRACTION = 0.8
 
 CODE_BLOCK = re.compile(r"```(?:python|py)?\s*\n(.*?)```", re.DOTALL)
 VERDICT_LINE = re.compile(r"\s*VERDICT:\s*(PASS|FAIL|INCONCLUSIVE)\s*$", re.IGNORECASE)
@@ -90,6 +96,7 @@ class CheckResult:
     tokens_in_total: int = 0
     tokens_out_total: int = 0
     elapsed_ms_total: int = 0
+    exec_timeout_s: float = 60.0  # the per-script wall-clock budget these ran under
 
 
 def extract_code(text: str | None) -> str | None:
@@ -161,6 +168,23 @@ def _tally_grades(samples: list[Sample]) -> tuple[str, str, int, int, int, int]:
     return verdict, f"{max(n_true, n_false)}/{voters}", n_true, n_false, abstain, errors
 
 
+def is_slow(run: ScriptRun, exec_timeout_s: float) -> bool:
+    """A completed script that ate ≥ SLOW_FRACTION of its budget (not timed out)."""
+    return not run.timed_out and run.exec_elapsed_ms >= SLOW_FRACTION * exec_timeout_s * 1000
+
+
+def _exec_summary(runs: list[ScriptRun], exec_timeout_s: float) -> dict:
+    """Isolate checker-subprocess cost from the LLM-dominated wall-clock, and
+    count the scripts worth looking at (timed out / near-budget)."""
+    return {
+        "n_scripts": len(runs),
+        "ms_total": sum(r.exec_elapsed_ms for r in runs),
+        "ms_max": max((r.exec_elapsed_ms for r in runs), default=0),
+        "n_timed_out": sum(1 for r in runs if r.timed_out),
+        "n_slow": sum(1 for r in runs if is_slow(r, exec_timeout_s)),
+    }
+
+
 def _aggregate_tir(runs: list[ScriptRun]) -> str | None:
     verdicts = [r.verdict for r in runs]
     if not verdicts:
@@ -216,6 +240,7 @@ async def check(
     grade_k: int = 8,
     exec_timeout_s: float = 60.0,
     executor: LocalExecutor | None = None,
+    on_script: Callable[[ScriptRun, int, int], None] | None = None,
 ) -> CheckResult:
     """Run the enabled verdict lanes concurrently and aggregate.
 
@@ -223,6 +248,10 @@ async def check(
     ``provider.meta_model`` (default: ``provider.model``) authors the checker
     scripts — a meta-task that narrow maths specialists are routinely bad at;
     grading stays on ``model``, which specialists are good at.
+
+    ``on_script(run, done, planned)`` fires as each tir script lands (mirrors
+    ``engine.solve``'s ``on_sample``) — for live surfacing of slow / timed-out
+    checker execution.
     """
     if tir_k <= 0 and grade_k <= 0:
         raise ValueError("at least one lane must be on: tir_k or grade_k must be > 0")
@@ -249,7 +278,9 @@ async def check(
             top_p=provider.top_p, extra_body=provider.extra_body,
         )
 
-    async def one_tir() -> ScriptRun:
+    tir_done = 0  # asyncio is single-threaded — no lock needed for the counter
+
+    async def _one_tir() -> ScriptRun:
         gen = await sample(meta_model or model, CHECKER_SYSTEM)
         if gen.error is not None:
             return ScriptRun("error", f"generation failed: {gen.error}", None, "", "", None, False, 0, gen)
@@ -261,6 +292,14 @@ async def check(
         return ScriptRun(
             verdict, note, code, res.stdout, res.stderr, res.exit_code, res.timed_out, res.elapsed_ms, gen
         )
+
+    async def one_tir() -> ScriptRun:
+        run = await _one_tir()
+        if on_script is not None:
+            nonlocal tir_done
+            tir_done += 1
+            on_script(run, tir_done, max(0, tir_k))
+        return run
 
     async def one_grade() -> Sample:
         return await sample(model, GRADER_SYSTEM)
@@ -295,6 +334,7 @@ async def check(
         tokens_in_total=sum(s.tokens_in for s in all_samples),
         tokens_out_total=sum(s.tokens_out for s in all_samples),
         elapsed_ms_total=int((time.monotonic() - t0) * 1000),
+        exec_timeout_s=exec_timeout_s,
     )
 
 
@@ -316,6 +356,8 @@ def check_result_to_dict(r: CheckResult) -> dict:
         "tokens_in_total": r.tokens_in_total,
         "tokens_out_total": r.tokens_out_total,
         "elapsed_ms_total": r.elapsed_ms_total,
+        "exec_timeout_s": r.exec_timeout_s,
+        "exec": _exec_summary(r.tir_runs, r.exec_timeout_s),
         "tir": [
             {
                 "verdict": run.verdict,

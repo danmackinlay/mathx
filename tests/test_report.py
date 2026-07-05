@@ -3,7 +3,12 @@ from __future__ import annotations
 
 import pytest
 
-from mathx.report import render_report, render_sample
+from mathx.report import (
+    render_check_report,
+    render_check_script,
+    render_report,
+    render_sample,
+)
 
 
 def make_run(**overrides) -> dict:
@@ -112,3 +117,57 @@ class TestRenderSample:
             render_sample(make_run(), 4)
         with pytest.raises(IndexError):
             render_sample(make_run(), -1)
+
+
+def make_check(tir: list[dict] | None = None, **overrides) -> dict:
+    tir = [{"verdict": "pass", "note": None, "exit_code": 0, "timed_out": False,
+            "exec_elapsed_ms": 40, "code": "print('VERDICT: PASS')", "stdout": "VERDICT: PASS",
+            "stderr": "", "gen": {"text": "gen"}}] if tir is None else tir
+    run = {
+        "kind": "check", "claim": "2+2=4", "status": "supported",
+        "summary": "supported — tir: pass (1 script)",
+        "model": "test-model", "meta_model": None, "base_url": "http://fake.test/v1",
+        "tir_k": len(tir), "grade_k": 0,
+        "tokens_in_total": 10, "tokens_out_total": 20, "elapsed_ms_total": 5000,
+        "exec_timeout_s": 60.0,
+        "exec": {"n_scripts": len(tir), "ms_total": sum(r["exec_elapsed_ms"] for r in tir),
+                 "ms_max": max((r["exec_elapsed_ms"] for r in tir), default=0),
+                 "n_timed_out": sum(1 for r in tir if r["timed_out"]),
+                 "n_slow": sum(1 for r in tir if not r["timed_out"] and r["exec_elapsed_ms"] >= 0.8 * 60_000)},
+        "tir": tir, "grade": None,
+    }
+    run.update(overrides)
+    return run
+
+
+class TestRenderCheckReport:
+    def test_terse_execution_line_no_warnings(self):
+        out = render_check_report(make_check())
+        assert "execution: 1 script, 40 ms total, slowest 40 ms" in out
+        assert "⚠" not in out
+
+    def test_timeout_flagged_prominently(self):
+        tir = [{"verdict": "error", "note": "script timed out", "exit_code": None,
+                "timed_out": True, "exec_elapsed_ms": 60000, "code": "while True: pass",
+                "stdout": "", "stderr": "", "gen": {"text": "g"}}]
+        out = render_check_report(make_check(tir))
+        assert "⚠ 1 timed out" in out
+        assert "timed out" in out  # per-script line too
+
+    def test_slow_script_flagged(self):
+        tir = [{"verdict": "pass", "note": None, "exit_code": 0, "timed_out": False,
+                "exec_elapsed_ms": 55000, "code": "c", "stdout": "VERDICT: PASS",
+                "stderr": "", "gen": {"text": "g"}}]
+        out = render_check_report(make_check(tir))
+        assert "slow (≥80% of 60s)" in out
+
+    def test_no_exec_block_when_no_tir(self):
+        run = make_check(tir=[], exec={"n_scripts": 0})
+        assert "execution:" not in render_check_report(run)
+
+
+class TestRenderCheckScript:
+    def test_budget_shown(self):
+        out = render_check_script(make_check(), 0)
+        assert "budget 60s" in out
+        assert "timed_out=False" in out

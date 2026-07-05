@@ -13,7 +13,7 @@ import click
 
 from mathx import config, jobs, ledger
 from mathx.argue import argue, expand_claim
-from mathx.check import check, check_result_to_dict
+from mathx.check import check, check_result_to_dict, is_slow
 from mathx.engine import Sample, result_to_dict, solve
 from mathx.ledger import challenge_text
 from mathx.report import (
@@ -295,6 +295,22 @@ def check_cmd(
         temperature=temperature, max_tokens=max_tokens, top_p=top_p,
         extra_body=extra_body, meta_model=meta_model,
     )
+    on_script = None
+    if sys.stderr.isatty():
+
+        def on_script(run, done: int, planned: int) -> None:
+            if run.timed_out:
+                flag = "  ⚠ timed out"
+            elif is_slow(run, exec_timeout):
+                flag = "  ⚠ slow"
+            else:
+                flag = ""
+            click.echo(
+                f"[{done}/{planned}] script {run.verdict} in "
+                f"{run.exec_elapsed_ms / 1000:.1f}s{flag}",
+                err=True,
+            )
+
     try:
         result = asyncio.run(
             check(
@@ -303,6 +319,7 @@ def check_cmd(
                 tir_k=tir_k,
                 grade_k=grade_k,
                 exec_timeout_s=exec_timeout,
+                on_script=on_script,
             )
         )
     except ValueError as e:
