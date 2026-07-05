@@ -8,7 +8,7 @@ We point any OpenAI-compatible chat endpoint at a maths problem, sample it `k` t
 Voting is optional: `--strategy cot` is one sample
 at temperature 0.
 
-Coded during while writing [a blog post](https://danmackinlay.name/notebook/automatic_maths.html) on applied LLM-for-math.
+Coded while writing [a blog post](https://danmackinlay.name/notebook/automatic_maths.html) on applied LLM-for-math.
 In fact, this is the second such project; there is an older bloatier project called
 [`pudding`](https://github.com/danmackinlay/pudding).
 
@@ -27,7 +27,7 @@ git clone https://github.com/danmackinlay/mathx && cd mathx && uv tool install -
 
 (mathx isn't on PyPI yet, so installs resolve via the git repo, not a bare `mathx` name.)
 
-**Skill** — install it with the open cross-agent skills CLI ,[skills.sh](https://skills.sh):
+**Skill** — install it with the open cross-agent skills CLI, [skills.sh](https://skills.sh):
 
 ```bash
 npx skills add danmackinlay/mathx                  # project-local (default)
@@ -118,7 +118,7 @@ while you test.
   `mathx.toml` only bundle those same flags (zero provider-specific code — dialect extras
   pass through verbatim via `extra_body`).
 - Not a benchmark / audition harness.
-- Not a frontend / renderer. mathx encourages the backend to output to `$…$` / `$$…$$` so math should render but this depends on the client you are using.
+- Not a frontend / renderer. mathx pins the backend to `$…$` / `$$…$$` delimiters, but whether that maths actually renders is up to the client you read it in.
 
 ## Status
 
@@ -131,7 +131,7 @@ mathx solve "7^999 mod 1000" --strategy maj@k --k 16
 ```
 
 against a competent generalist endpoint should return `143` with high certainty.
-Interestingly  `Qwen2.5-Math-72B` returns `43` unanimously.
+Interestingly, `Qwen2.5-Math-72B` returns `43` unanimously.
 
 That's the ten-second pipe check. For the real tour — recover-and-verify a formula, audit a
 plausible-but-false belief, build a claim ledger — work through [EXAMPLES.md](EXAMPLES.md).
@@ -339,11 +339,11 @@ that wants to call mathx programmatically uses `solve(...)` directly and skips t
 ## Known-good models and providers
 
 The model determines how much help mathx is.
-Here are some interesting starting options for  `--model` / `--base-url`..
+Here are some interesting starting options for `--model` / `--base-url`.
 
 ### Cloud generalists
 
-Frontier reasoners do pretty good on mathematics on open maths leaderboards and
+Frontier reasoners score well on the open maths leaderboards and
 have the big practical advantage of being easily rentable per token. Any of these is a reasonable default for `--strategy maj@k` or `self_verify`:
 
 | Model | Endpoint | Notes |
