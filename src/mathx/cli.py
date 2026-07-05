@@ -73,82 +73,12 @@ _ENDPOINT_OPTIONS = [
 ]
 
 
-def resolve_provider(
-    *,
-    profile: str | None,
-    model: str | None,
-    base_url: str | None,
-    api_key: str | None,
-    temperature: float | None,
-    max_tokens: int | None,
-    top_p: float | None,
-    extra_body: str | None,
-    meta_model: str | None = None,
-    equiv_judge_model: str | None = None,
-    require: tuple = ("model", "base_url", "api_key"),
-) -> dict:
-    """Merge flags > profile > environment into the provider settings dict.
-
-    ``require`` names the keys that must resolve; ledger verbs relax model and
-    base_url because the ledger itself supplies their fallback."""
+def resolve_provider(**kwargs) -> dict:
+    """config.resolve_provider, with errors surfaced as CLI errors."""
     try:
-        prof = config.resolve_profile(profile)
+        return config.resolve_provider(**kwargs)
     except ValueError as e:
         raise click.ClickException(str(e)) from e
-
-    def pick(flag_value, key: str, *env_names: str):
-        if flag_value is not None:
-            return flag_value
-        if key in prof:
-            return prof[key]
-        for env in env_names:
-            if os.environ.get(env):
-                return os.environ[env]
-        return None
-
-    if api_key is None and prof.get("api_key_env"):
-        api_key = os.environ.get(prof["api_key_env"])
-        if not api_key:
-            raise click.ClickException(
-                f"profile names api_key_env={prof['api_key_env']!r} but that "
-                "environment variable is empty"
-            )
-    if api_key is None:
-        api_key = os.environ.get("MATHX_API_KEY") or os.environ.get("OPENAI_API_KEY")
-
-    if extra_body is not None:
-        try:
-            extra = json.loads(extra_body)
-        except json.JSONDecodeError as e:
-            raise click.ClickException(f"--extra-body is not valid JSON: {e}") from e
-    else:
-        extra = prof.get("extra_body")
-
-    resolved = {
-        "model": pick(model, "model", "MATHX_MODEL"),
-        "base_url": pick(base_url, "base_url", "MATHX_BASE_URL"),
-        "api_key": api_key,
-        "temperature": pick(temperature, "temperature"),
-        "max_tokens": pick(max_tokens, "max_tokens") or 16000,
-        "top_p": pick(top_p, "top_p"),
-        "extra_body": extra,
-        "max_retries": prof.get("max_retries"),
-        "meta_model": pick(meta_model, "meta_model"),
-        "equiv_judge_model": pick(equiv_judge_model, "equiv_judge_model"),
-    }
-    # a profile's concurrency reaches this process AND its spawned workers via env
-    if prof.get("concurrency") and not os.environ.get("MATHX_CONCURRENCY"):
-        os.environ["MATHX_CONCURRENCY"] = str(prof["concurrency"])
-
-    hints = {
-        "model": "--model / profile model / $MATHX_MODEL",
-        "base_url": "--base-url / profile base_url / $MATHX_BASE_URL",
-        "api_key": "--api-key / profile api_key_env / $MATHX_API_KEY",
-    }
-    missing = [hints[key] for key in require if not resolved.get(key)]
-    if missing:
-        raise click.ClickException("provider not configured; missing " + "; ".join(missing))
-    return resolved
 
 # Solving-specific options (`solve`, `submit` without --check).
 _SOLVE_OPTIONS = [
@@ -594,6 +524,9 @@ def status_cmd(job_id: str, as_json: bool) -> None:
         click.echo(f"job {job_id}: complete")
         if result.get("kind") == "check":
             click.echo(f"status: {result.get('summary') or result.get('status')}")
+        elif result.get("kind") == "argue":
+            counts = " ".join(f"{v} {k}" for k, v in sorted((result.get("claims") or {}).items()))
+            click.echo(f"ledger: {result.get('ledger_id')}   {result.get('status')}   {counts}")
         else:
             click.echo(
                 f"answer: {result.get('answer')}   margin: {result.get('margin')}   "
@@ -629,6 +562,8 @@ def jobs_cmd(as_json: bool, prune: float | None) -> None:
             if result.get("kind") == "check":
                 margin = (result.get("grade") or {}).get("margin")
                 outcome = result.get("status", "") + (f" ({margin})" if margin else "")
+            elif result.get("kind") == "argue":
+                outcome = f"{result.get('status', '')} → {result.get('ledger_id', '')}"
             else:
                 outcome = f"{result.get('answer')} ({result.get('margin')})"
         elif r.get("status") == "error":
@@ -692,6 +627,15 @@ def show_cmd(run: str, sample_index: int | None, script_index: int | None) -> No
     # a job record wraps the run under "result"; a --out file IS the run
     run_dict = record.get("result") if "result" in record else record
     kind = run_dict.get("kind") or ("check" if "claim" in run_dict else "solve")
+    if kind == "argue":
+        # an argue job's result is a pointer; the ledger is the artifact
+        try:
+            run_dict = ledger.read(run_dict["ledger_id"])
+        except KeyError:
+            raise click.ClickException(
+                f"argue job points at missing ledger {run_dict.get('ledger_id')}"
+            ) from None
+        kind = "ledger"
     try:
         if kind == "ledger":
             if sample_index is not None or script_index is not None:

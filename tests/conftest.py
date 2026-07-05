@@ -98,7 +98,11 @@ def inline_workers(monkeypatch):
     tasks = []
 
     def spawn(job_id: str, **_kw) -> None:
-        tasks.append(asyncio.get_running_loop().create_task(jobs.run_job(job_id)))
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return  # spawned outside a loop (e.g. a submit tool): test drives it manually
+        tasks.append(loop.create_task(jobs.run_job(job_id)))
 
     monkeypatch.setenv("MATHX_API_KEY", "test-key")
     monkeypatch.setattr(jobs, "spawn_worker", spawn)

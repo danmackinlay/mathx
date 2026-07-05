@@ -33,6 +33,7 @@ never live in the file — ``api_key_env`` names the variable that holds one.
 """
 from __future__ import annotations
 
+import json
 import os
 import tomllib
 from pathlib import Path
@@ -85,6 +86,84 @@ def load_profiles(path: Path) -> dict[str, dict]:
                 f"known keys: {sorted(PROFILE_KEYS)}"
             )
     return profiles
+
+
+def resolve_provider(
+    *,
+    profile: str | None = None,
+    model: str | None = None,
+    base_url: str | None = None,
+    api_key: str | None = None,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    top_p: float | None = None,
+    extra_body: dict | str | None = None,
+    meta_model: str | None = None,
+    equiv_judge_model: str | None = None,
+    require: tuple = ("model", "base_url", "api_key"),
+) -> dict:
+    """Merge explicit values > profile > environment into provider settings.
+
+    Every surface (CLI, MCP server, Open WebUI Pipe) resolves through here.
+    ``require`` names keys that must resolve (ledger verbs relax model/base_url
+    because the ledger supplies their fallback). Raises ValueError with a
+    human-readable message; callers translate to their surface's error type.
+    """
+    prof = resolve_profile(profile)
+
+    def pick(explicit, key: str, *env_names: str):
+        if explicit is not None:
+            return explicit
+        if key in prof:
+            return prof[key]
+        for env in env_names:
+            if os.environ.get(env):
+                return os.environ[env]
+        return None
+
+    if api_key is None and prof.get("api_key_env"):
+        api_key = os.environ.get(prof["api_key_env"])
+        if not api_key:
+            raise ValueError(
+                f"profile names api_key_env={prof['api_key_env']!r} but that "
+                "environment variable is empty"
+            )
+    if api_key is None:
+        api_key = os.environ.get("MATHX_API_KEY") or os.environ.get("OPENAI_API_KEY")
+
+    if isinstance(extra_body, str):
+        try:
+            extra_body = json.loads(extra_body)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"extra_body is not valid JSON: {e}") from e
+    if extra_body is None:
+        extra_body = prof.get("extra_body")
+
+    resolved = {
+        "model": pick(model, "model", "MATHX_MODEL"),
+        "base_url": pick(base_url, "base_url", "MATHX_BASE_URL"),
+        "api_key": api_key,
+        "temperature": pick(temperature, "temperature"),
+        "max_tokens": pick(max_tokens, "max_tokens") or 16000,
+        "top_p": pick(top_p, "top_p"),
+        "extra_body": extra_body,
+        "max_retries": prof.get("max_retries"),
+        "meta_model": pick(meta_model, "meta_model"),
+        "equiv_judge_model": pick(equiv_judge_model, "equiv_judge_model"),
+    }
+    # a profile's concurrency reaches this process AND its spawned workers via env
+    if prof.get("concurrency") and not os.environ.get("MATHX_CONCURRENCY"):
+        os.environ["MATHX_CONCURRENCY"] = str(prof["concurrency"])
+
+    hints = {
+        "model": "model (flag/profile/$MATHX_MODEL)",
+        "base_url": "base_url (flag/profile/$MATHX_BASE_URL)",
+        "api_key": "api key (flag/profile api_key_env/$MATHX_API_KEY)",
+    }
+    missing = [hints[key] for key in require if not resolved.get(key)]
+    if missing:
+        raise ValueError("provider not configured; missing " + "; ".join(missing))
+    return resolved
 
 
 def resolve_profile(name: str | None) -> dict:

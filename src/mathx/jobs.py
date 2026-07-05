@@ -13,8 +13,10 @@ Record shape:
 
 ``args`` is kind-specific: solve jobs carry {problem, strategy, k, model,
 base_url, temperature, max_tokens, max_k}; check jobs carry {claim, tir_k,
-grade_k, exec_timeout_s, model, base_url, temperature, max_tokens}. Records
-predating ``kind`` are treated as solve. When finished, the record gains
+grade_k, exec_timeout_s, model, base_url, temperature, max_tokens}; argue
+jobs carry the argue() knobs plus a pre-created ledger_id (the ledger is the
+artifact — the job result is a thin pointer to it). Records predating
+``kind`` are treated as solve. When finished, the record gains
 ``finished_at`` and either ``result`` (exactly what ``--out`` writes for that
 kind) or ``error``.
 
@@ -74,7 +76,7 @@ def new_job_id() -> str:
 def submit(*, kind: str = "solve", args: dict) -> dict:
     """Write a fresh "running" record and return it. Does NOT start the worker —
     the caller decides how (``spawn_worker`` for fire-and-forget, ``run_job`` inline)."""
-    if kind not in ("solve", "check"):
+    if kind not in ("solve", "check", "argue"):
         raise ValueError(f"unknown job kind: {kind!r}")
     job_id = new_job_id()
     while _job_path(job_id).exists():
@@ -159,7 +161,37 @@ async def run_job(job_id: str) -> dict:
     if not api_key:
         return fail(job_id, error="no API key in environment: set MATHX_API_KEY (or OPENAI_API_KEY)")
     try:
-        if kind == "check":
+        if kind == "argue":
+            from mathx.argue import argue as run_argue  # lazy: argue imports this module
+            from mathx.ledger import state_counts
+
+            led = await run_argue(
+                args["problem"],
+                model=args["model"],
+                base_url=args["base_url"],
+                api_key=api_key,
+                rounds=args.get("rounds", 2),
+                tir_k=args.get("tir_k", 1),
+                grade_k=args.get("grade_k", 4),
+                temperature=args.get("temperature"),
+                max_tokens=args.get("max_tokens", 16000),
+                exec_timeout_s=args.get("exec_timeout_s", 60.0),
+                meta_model=args.get("meta_model"),
+                top_p=args.get("top_p"),
+                extra_body=args.get("extra_body"),
+                max_retries=args.get("max_retries"),
+                ledger_id=args.get("ledger_id"),
+                poll_s=args.get("poll_s", 2.0),
+            )
+            # the ledger is the artifact; the job result is a thin pointer
+            payload = {
+                "kind": "argue",
+                "ledger_id": led["ledger_id"],
+                "status": led["status"],
+                "rounds_used": led["rounds_used"],
+                "claims": state_counts(led),
+            }
+        elif kind == "check":
             result = await run_check(
                 args["claim"],
                 model=args["model"],

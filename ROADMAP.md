@@ -54,10 +54,10 @@ Every stage must preserve these three. A proposed change that breaks one is the 
 - `mathx argue` (`src/mathx/argue.py`): decompose into self-contained claims (generalist call) → Stage-3 check job per claim via the Stage-2 store → refine from failed verdicts + scratchpad of refuted claims, up to `--rounds`. The claim ledger (`src/mathx/ledger.py`) is a persistent file (claim tree → job ids); state derived live from the job store; `mathx show <ledger_id>` renders badges.
 - Interactive verbs shipped: `mathx ledger recheck` (higher k), `challenge` (objection in the prompt), `expand` (checked sub-claims, one tree level); all accept `--model` overrides (regime mixing).
 
-**Stage 5 — the face**
-- Open WebUI: the **Pipe is the primary integration**, not MCP (decided 2026-07-04). A Pipe owns the loop in code (invariant-2 home (c)), maps `argue`'s `on_event` onto OWUI's event emitter for live ledger progress, and works regardless of the served model's tool-calling competence — whereas OWUI's chat-tool loop would put the served model in charge of polling a long handle, which specialists (VibeThinker) can't do at all. MCP registration in OWUI remains a free extra for ad-hoc oracle calls with generalist models.
-- MCP surface additions owed by Stages 3–4 — `submit_check`, a jobs-list tool, the `check_solve` naming tidy-up, argue/ledger tools, profile support — now motivated by the Claude Desktop/Cursor-family clients, not OWUI.
-- A ledger TUI/web view once the loop earns it.
+**Stage 5 — the face** — ✅ done (TUI still gated)
+- Open WebUI: the **Pipe is the primary integration**, not MCP (decided 2026-07-04; OWUI's chat-tool loop would put the served model in charge of polling a long handle, which specialists can't do). Shipped: `integrations/openwebui/mathx_pipe.py` — solve/check/argue as model-picker entries, loop in code, `on_event`/`on_sample` streamed to the status emitter, provider via profiles. MCP registration in OWUI remains a free extra.
+- MCP surface for the agent-client family (Claude Desktop/Cursor/Copilot) — ✅ shipped in `mcp_server.py`: `submit_check`, `submit_argue` (+ pre-created ledger id; forced `kind: argue` jobs — LOOP_PLAN decision log), `poll_job` (né `check_solve`), `list_jobs`/`list_ledgers` (compact), `get_ledger` (live badges), `recheck_claim`/`challenge_claim`, `profile` on every submit.
+- A ledger TUI/web view once the loop earns it — still gated, deliberately unbuilt.
 
 **Cross-cutting prerequisite** — ✅ done: pytest suite in `tests/` with a mocked OpenAI-compatible endpoint (httpx `MockTransport` under the real openai client — full wire path, no network); covers the pure helpers, `solve()` incl. escalation, the report renderers, and both CLI verbs. `uv run pytest`.
 

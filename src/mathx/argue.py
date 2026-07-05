@@ -159,6 +159,7 @@ async def argue(
     top_p: float | None = None,
     extra_body: dict | None = None,
     max_retries: int | None = None,
+    ledger_id: str | None = None,
     spawn=None,
     on_event: Callable[[str], None] | None = None,
 ) -> dict:
@@ -168,8 +169,9 @@ async def argue(
     ``meta_model`` (default: ``model``) does the meta-tasks — decomposition
     here, checker-script authorship inside each check job — so a narrow
     specialist can keep the grading seat without being handed jobs it is bad
-    at. ``spawn`` overrides how check workers start (tests run them
-    in-process).
+    at. ``ledger_id`` adopts a pre-created (still-empty) ledger, so a
+    submitter can hand the id to its caller before the loop starts. ``spawn``
+    overrides how check workers start (tests run them in-process).
     """
     emit = on_event or (lambda _msg: None)
     client_kwargs: dict = {"base_url": base_url, "api_key": api_key}
@@ -183,7 +185,12 @@ async def argue(
         top_p=top_p, extra_body=extra_body, max_retries=max_retries, spawn=spawn,
     )
 
-    led = ledger.create(problem, model=model, base_url=base_url, rounds_max=rounds)
+    if ledger_id is not None:
+        led = ledger.read(ledger_id)
+        if led.get("claims"):
+            raise ValueError(f"ledger {ledger_id} already has claims; argue starts fresh ones")
+    else:
+        led = ledger.create(problem, model=model, base_url=base_url, rounds_max=rounds)
     led["decompositions"] = []
     emit(f"ledger: {led['ledger_id']}")
 

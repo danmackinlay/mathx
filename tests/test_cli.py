@@ -491,3 +491,37 @@ class TestCheckRecords:
         assert result.exit_code == 0, result.output
         assert "supported (2/2)" in result.output
         assert "2+2=4" in result.output
+
+
+class TestArgueRecords:
+    def _seed(self):
+        from mathx import ledger
+
+        led = ledger.create("why?", model="m", base_url="http://b/v1", rounds_max=1)
+        claim = ledger.add_claim(led, "Claim alpha.", round_added=0)
+        ledger.save(led)
+        record = jobs.submit(
+            kind="argue", args={"problem": "why?", "ledger_id": led["ledger_id"], "model": "m", "base_url": "http://b/v1"}
+        )
+        jobs.finalize(
+            record["job_id"],
+            result={"kind": "argue", "ledger_id": led["ledger_id"], "status": "assembled",
+                    "rounds_used": 0, "claims": {"unchecked": 1}},
+        )
+        return record, led
+
+    def test_show_argue_job_renders_the_ledger(self):
+        record, led = self._seed()
+        result = invoke("show", record["job_id"])
+        assert result.exit_code == 0, result.output
+        assert f"ledger: {led['ledger_id']}" in result.output
+        assert "Claim alpha." in result.output
+
+    def test_status_and_jobs_show_argue_pointer(self):
+        record, led = self._seed()
+        status = invoke("status", record["job_id"])
+        assert status.exit_code == 0, status.output
+        assert led["ledger_id"] in status.output
+        assert "1 unchecked" in status.output
+        listing = invoke("jobs")
+        assert "assembled → " in listing.output  # outcome column truncates the id (by design)

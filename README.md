@@ -40,11 +40,15 @@ handles updates and removal.
 Run `mathx doctor` any time to check that `mathx` is on PATH and the skill is installed; it prints
 the right command if either is missing.
 
-**Other agents.** For tools whose extension model isn't a `SKILL.md` — Open WebUI,
-Claude Desktop, Cursor — run the bundled MCP server: `mathx mcp-serve` (stdio). It exposes
-`submit_solve` / `check_solve` (handle/poll, so no client tool-call timeout ever bites);
-per-client wiring snippets are in [`MCP_PLAN.md`](MCP_PLAN.md).
-Qwen-Agent can skip MCP and import `mathx.engine.solve` directly;
+**Other agents.** Agent clients (Claude Desktop, Cursor, VS Code Copilot) get the bundled
+MCP server: `mathx mcp-serve` (stdio) — handle/poll tools (`submit_solve` / `submit_check` /
+`submit_argue` / `poll_job` / `list_jobs`, plus ledger tools `get_ledger` / `list_ledgers` /
+`recheck_claim` / `challenge_claim`), all instant-return so no client tool-call timeout ever
+bites; per-client wiring snippets are in [`MCP_PLAN.md`](MCP_PLAN.md).
+**Open WebUI** gets the Pipe instead — the loop runs in mathx code and streams ledger
+progress into chat, independent of the served model's tool-calling ability:
+[`integrations/openwebui/`](integrations/openwebui/).
+Qwen-Agent can skip both and import `mathx.engine.solve` directly;
 see [`examples/qwen_agent_tool.py`](examples/qwen_agent_tool.py).
 
 ## Configuration: profiles and environment variables
@@ -168,7 +172,7 @@ mathx show <job_id>      # render a finished job (same reader as for --out files
 `submit` writes a `running` record to the job store (see `MATHX_JOBS_DIR`) and detaches a
 worker that outlives the CLI call; the record flips to `complete`/`error` when the fan-out
 lands. Runs get identity and history: every surface — `status`, `jobs`, `show`, the MCP
-server's `check_solve` — is just a reader of the same files. The API key is never written to
+server's `poll_job` — is just a reader of the same files. The API key is never written to
 disk; workers read it from the environment.
 
 ## Checking claims
@@ -316,8 +320,10 @@ src/mathx/
   ledger.py       claim-ledger store; live claim state derived from the job store
   report.py       pure renderers over run/check/ledger JSON (`mathx show`)
   jobs.py         file-per-job store + detached worker (`python -m mathx.jobs <id>`)
-  mcp_server.py   FastMCP wrapper: submit_solve / check_solve over the job store
+  mcp_server.py   FastMCP tools: submit_solve/check/argue, poll_job, ledger tools
   cli.py          click group: solve, check, argue, submit, status, jobs, show, ledger, …
+integrations/openwebui/
+  mathx_pipe.py   Open WebUI Pipe: solve/check/argue in the model picker, live progress
 skills/maths-oracle/
   SKILL.md     agent-facing trigger phrases + dispatch recipe (any agent via npx skills)
 tests/

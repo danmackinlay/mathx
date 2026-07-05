@@ -284,3 +284,19 @@ as Cursor.
     the child's env only.
   - `submit_solve` also grew `max_k` (weak-margin auto-escalation, added in Stage 1 after this
     plan was written).
+- **2026-07-05 (Stage 5)** — The full agent-client surface landed:
+  - **`check_solve` renamed to `poll_job`** (breaking, pre-deployment — nothing was wired
+    anywhere but this machine). The old name meant "poll a job", which stopped being readable
+    once claim *checks* existed.
+  - New tools: `submit_check`, `submit_argue` (returns job id AND ledger_id immediately — the
+    ledger file updates live, so `get_ledger` is the progress stream), `list_jobs` /
+    `list_ledgers` (compact, no sample texts — token discipline for agent clients),
+    `recheck_claim`, `challenge_claim`. `expand` stays CLI-only: it blocks on a decomposition
+    call, which violates handle/poll; make it a job kind if an agent client ever needs it.
+  - All submit tools take `profile` (resolution shared with the CLI via
+    `config.resolve_provider`). Keys remain env-only.
+  - This forced background argue (`kind: "argue"` jobs) — LOOP_PLAN's stays-out overridden by
+    the handle/poll requirement; its decision log records the reversal. CLI `submit --argue`
+    is still not exposed (trivially possible; no CLI pull yet).
+  - Open WebUI is NOT this surface's constituency anymore: it integrates via the Pipe
+    (`integrations/openwebui/`), per the ROADMAP Stage 5 decision.

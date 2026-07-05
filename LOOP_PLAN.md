@@ -71,3 +71,8 @@ beyond appending a verdict reference.
   (prompts, parsing, loop, expand), `mathx argue` + `mathx ledger` group, `show` renders
   ledgers. Cost ceiling per argue run ≈ (claims × (tir_k + grade_k) + 1 decomposition) ×
   (rounds + 1) samples, worst case.
+- **2026-07-05 (stays-out reversal: background argue)** — Stage 5's MCP surface requires
+  handle/poll, so `kind: "argue"` jobs now exist: `submit_argue` pre-creates the ledger
+  (argue() adopts it via `ledger_id`), the worker runs the loop, and the job result is a thin
+  pointer — the ledger stays the artifact. Foreground `mathx argue` unchanged; CLI
+  `submit --argue` still not exposed.
