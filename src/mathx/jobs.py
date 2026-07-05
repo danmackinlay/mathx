@@ -114,12 +114,40 @@ def read(job_id: str) -> dict:
         raise KeyError(f"unknown job id: {job_id}") from None
 
 
+def stamp_worker(job_id: str) -> dict:
+    """Record the executing worker's pid, making orphans detectable: a
+    'running' record whose worker is gone died without finalizing (live e2e:
+    four workers vanished mid-run and their jobs read as running forever)."""
+    record = read(job_id)
+    record["worker_pid"] = os.getpid()
+    _write_atomic(_job_path(job_id), record)
+    return record
+
+
+def worker_alive(record: dict) -> bool | None:
+    """True/False when the record names a worker pid on this host; None when
+    liveness is unknowable (no pid stamped yet)."""
+    pid = record.get("worker_pid")
+    if not pid:
+        return None
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists, owned by someone else
+
+
 def check(job_id: str) -> dict:
-    """The record, plus live ``elapsed_ms`` while it is still running."""
+    """The record, plus live ``elapsed_ms`` and worker liveness while running."""
     record = read(job_id)
     if record.get("status") == "running":
         started = datetime.fromisoformat(record["started_at"])
         record["elapsed_ms"] = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
+        alive = worker_alive(record)
+        if alive is not None:
+            record["worker_alive"] = alive
     return record
 
 

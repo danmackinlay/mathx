@@ -166,6 +166,27 @@ class TestArgue:
 
 
 class TestArgueExtras:
+    def test_orphaned_check_job_fails_instead_of_hanging(self, fake_endpoint, monkeypatch):
+        # live e2e: workers died without finalizing and the loop polled ghosts
+        # forever — a dead worker pid must fail the job and let the loop finish
+        import json as _json
+
+        fake_endpoint(by_system={DECOMPOSER_SYSTEM: decomp("Claim doomed.")})
+        monkeypatch.setenv("MATHX_API_KEY", "test-key")
+
+        def spawn_then_die(job_id: str, **_kw) -> None:
+            record = jobs.read(job_id)
+            record["worker_pid"] = 999999999  # stamped, then "died"
+            (jobs.jobs_dir() / f"{job_id}.json").write_text(_json.dumps(record))
+
+        monkeypatch.setattr(jobs, "spawn_worker", spawn_then_die)
+        led = run_argue(rounds=0)
+        assert led["status"] == "assembled"
+        claim = led["claims"][0]
+        state, detail = ledger.claim_state(claim)
+        assert state == "error"
+        assert "orphan" in detail
+
     def test_decompositions_persisted_as_audit(self, fake_endpoint, inline_workers):
         fake_endpoint(by_system={
             DECOMPOSER_SYSTEM: decomp("Claim alpha."),

@@ -243,8 +243,14 @@ async def argue(
             for job_id, claim in list(pending.items()):
                 if job_id not in in_flight:
                     continue
-                if jobs.read(job_id).get("status") == "running":
-                    continue
+                record = jobs.read(job_id)
+                if record.get("status") == "running":
+                    if jobs.worker_alive(record) is False:
+                        # orphan: the worker died without finalizing — fail the
+                        # record and move on instead of polling a ghost forever
+                        jobs.fail(job_id, error="worker died without finalizing (orphan)")
+                    else:
+                        continue
                 state, detail = ledger.claim_state(claim)
                 emit(f"  {claim['id']} {state}" + (f" — {detail}" if detail else ""))
                 del pending[job_id]

@@ -109,6 +109,16 @@ class TestStore:
         (isolated_jobs_dir / "garbage.json").write_text("not json {")
         assert len(jobs.list_jobs()) == 1
 
+    def test_worker_liveness(self, isolated_jobs_dir):
+        record = submit()
+        assert "worker_alive" not in jobs.check(record["job_id"])  # no pid stamped yet
+        jobs.stamp_worker(record["job_id"])
+        assert jobs.check(record["job_id"])["worker_alive"] is True  # us
+        stamped = jobs.read(record["job_id"])
+        stamped["worker_pid"] = 999999999  # certainly dead
+        (isolated_jobs_dir / f"{record['job_id']}.json").write_text(json.dumps(stamped))
+        assert jobs.check(record["job_id"])["worker_alive"] is False
+
     def test_prune_removes_old_keeps_recent(self, isolated_jobs_dir):
         old_done = submit("old complete")
         jobs.finalize(old_done["job_id"], result={"answer": "1"})

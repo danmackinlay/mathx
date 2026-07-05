@@ -23,7 +23,7 @@ from mathx.ledger import state_counts
 
 async def run_job(job_id: str) -> dict:
     """Execute a submitted job and finalize its record."""
-    record = jobs.read(job_id)
+    record = jobs.stamp_worker(job_id)  # make this worker's death detectable
     kind = record.get("kind", "solve")  # pre-Stage-3 records carry no kind
     args = record["args"]
     api_key = os.environ.get("MATHX_API_KEY") or os.environ.get("OPENAI_API_KEY")

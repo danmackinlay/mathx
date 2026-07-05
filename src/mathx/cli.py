@@ -513,6 +513,12 @@ def status_cmd(job_id: str, as_json: bool) -> None:
         if not as_json:
             click.echo(f"job {job_id}: running   elapsed: {record.get('elapsed_ms', 0) / 1000:.0f} s")
             click.echo(f"{record.get('kind', 'solve')}: {subject}")
+            if record.get("worker_alive") is False:
+                click.echo(
+                    "warning: worker is DEAD — this job is orphaned and will never "
+                    "finish; resubmit it (`mathx jobs --prune` cleans old records)",
+                    err=True,
+                )
         sys.exit(2)
     if status == "error":
         if not as_json:
