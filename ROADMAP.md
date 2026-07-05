@@ -1,4 +1,10 @@
-# Roadmap: mathx → solver workstation
+# mathx → solver workstation (build record)
+
+**Status:** all five stages and both cross-cutting tracks shipped (2026-07). The one
+deliberately unbuilt piece is the ledger TUI/web view (Stage 5, gated). This is no longer a plan
+to execute but the map of what was built and why — the staged shape it grew along, kept as the
+index into the [design notes](DESIGN_NOTES.md) and the code, and the home of the invariants that
+guard further work.
 
 ## Context
 
@@ -6,16 +12,20 @@ mathx began as a thin maj@k oracle: CLI + SKILL.md, MCP deferred (design notes: 
 
 Background: [automatic_maths](https://danmackinlay.name/notebook/automatic_maths) and [ai_reasoning](https://danmackinlay.name/notebook/ai_reasoning).
 
-## Why the architecture already supports this
+## Why the pivot was cheap
 
-1. `solve()` in [src/mathx/engine.py](src/mathx/engine.py) is already async (`asyncio.gather` over k samples).
-2. Every run already serializes to a complete JSON audit record (`result_to_dict`: answer, margin, votes, per-sample traces).
-3. The [MCP design notes](DESIGN_NOTES.md#mcp-server) already design the async-handle pattern (submit/check + file-per-job store).
-4. Crucially: `math_verify`-based equivalence checking in `_cluster_and_vote` is already a *claim-checker primitive* — the oracle can become the inner call of a claim-level loop without changing identity.
+Four properties of the thin oracle meant the workstation could be grown around it rather than bolted on:
 
-Strategic pivot: grow the workstation **around a persistent job store**, not by bloating the engine. One-shot CLI calls become named, inspectable runs; every surface (CLI report, MCP `poll_job`, Open WebUI) is just a reader of the same files.
+1. `solve()` in [src/mathx/engine.py](src/mathx/engine.py) was already async (`asyncio.gather` over k samples).
+2. Every run already serialized to a complete JSON audit record (`result_to_dict`: answer, margin, votes, per-sample traces).
+3. The [MCP design notes](DESIGN_NOTES.md#mcp-server) had already worked out the async-handle pattern (submit/check + file-per-job store).
+4. Crucially: `math_verify`-based equivalence checking in `_cluster_and_vote` was already a *claim-checker primitive* — the oracle could become the inner call of a claim-level loop without changing identity.
 
-## The solver equivalent of AxProverBase (design sketch)
+The pivot that followed: grow the workstation **around a persistent job store**, not by bloating the engine. One-shot CLI calls became named, inspectable runs; every surface (CLI report, MCP `poll_job`, Open WebUI) is just a reader of the same files.
+
+## The solver equivalent of AxProverBase
+
+The mapping that guided the build — the right-hand column is what shipped:
 
 | AxProverBase (prover) | Solver-side analogue |
 |---|---|
@@ -37,7 +47,7 @@ Every stage must preserve these three. A proposed change that breaks one is the 
 2. **The loop has three homes, all clients of the same primitives.** (a) A host agent driving CLI/MCP verbs (Claude Desktop/Code — works now, maximum exploratory flexibility); (b) the Stage-4 mathx verb; (c) `solve()`/`check()` imported into custom Python. Stage 4 is built ON submit/check/jobs, never around them — a loop that bypasses the primitives demotes the other two homes.
 3. **Every unit of work is a persistent, self-describing record.** A run/verdict is a job file carrying inputs, evidence, and audit trail; nothing encodes who drove the loop. The Stage-4 claim ledger is therefore itself a file (claim tree → job ids), so a loop started in one home can be inspected, challenged, and resumed from another.
 
-## Staged roadmap
+## The stages, as built
 
 **Stage 1 — display what's already computed** (pure reader) — ✅ done
 - `mathx show <run.json>`: vote histogram, margin, per-sample answers, disagreement surfacing (`src/mathx/report.py`).
@@ -56,7 +66,7 @@ Every stage must preserve these three. A proposed change that breaks one is the 
 
 **Stage 5 — the face** — ✅ done (TUI still gated)
 - Open WebUI: the **Pipe is the primary integration**, not MCP (decided 2026-07-04; OWUI's chat-tool loop would put the served model in charge of polling a long handle, which specialists can't do). Shipped: `integrations/openwebui/mathx_pipe.py` — solve/check/argue as model-picker entries, loop in code, `on_event`/`on_sample` streamed to the status emitter, provider via profiles. MCP registration in OWUI remains a free extra.
-- MCP surface for the agent-client family (Claude Desktop/Cursor/Copilot) — ✅ shipped in `mcp_server.py`: `submit_check`, `submit_argue` (+ pre-created ledger id; forced `kind: argue` jobs — LOOP_PLAN decision log), `poll_job` (né `check_solve`), `list_jobs`/`list_ledgers` (compact), `get_ledger` (live badges), `recheck_claim`/`challenge_claim`, `profile` on every submit.
+- MCP surface for the agent-client family (Claude Desktop/Cursor/Copilot) — ✅ shipped in `mcp_server.py`: `submit_check`, `submit_argue` (+ pre-created ledger id; forced `kind: argue` jobs — see the [argue-loop decision log](DESIGN_NOTES.md#decompose-check-refine-loop-mathx-argue)), `poll_job` (né `check_solve`), `list_jobs`/`list_ledgers` (compact), `get_ledger` (live badges), `recheck_claim`/`challenge_claim`, `profile` on every submit.
 - A ledger TUI/web view once the loop earns it — still gated, deliberately unbuilt.
 
 **Cross-cutting prerequisite** — ✅ done: pytest suite in `tests/` with a mocked OpenAI-compatible endpoint (httpx `MockTransport` under the real openai client — full wire path, no network); covers the pure helpers, `solve()` incl. escalation, the report renderers, and both CLI verbs. `uv run pytest`.
