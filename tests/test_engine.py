@@ -3,21 +3,29 @@ from __future__ import annotations
 
 import asyncio
 
+from conftest import provider
+
 from mathx.engine import (
     Result,
     Sample,
-    _cluster_and_vote,
+    _cluster,
     _post_think,
+    _tally,
     extract_boxed,
     result_to_dict,
     solve,
 )
 
-PROVIDER = dict(model="test-model", base_url="http://fake.test/v1", api_key="test-key")
+
+def _solve(problem: str = "1+1?", *, equiv_judge_model: str | None = None, **kwargs):
+    p = provider(equiv_judge_model=equiv_judge_model)
+    return asyncio.run(solve(problem, provider=p, **kwargs))
 
 
-def _solve(problem: str = "1+1?", **kwargs):
-    return asyncio.run(solve(problem, **PROVIDER, **kwargs))
+def _cluster_and_vote(samples):
+    """The CAS-only cluster+tally pipeline, as solve() runs it without a judge."""
+    winner, margin, votes, _ = _tally(_cluster(samples))
+    return winner, margin, votes
 
 
 def _voted(boxed: str, confidence: float | None = None) -> Sample:

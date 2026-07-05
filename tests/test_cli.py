@@ -407,7 +407,7 @@ class TestArgueAndLedger:
         verdict = persisted["claims"][0]["verdicts"][-1]
         assert verdict == {"job_id": job_id, "round": 0, "kind": "recheck"}
         assert jobs.read(job_id)["args"]["grade_k"] == 16
-        assert jobs.read(job_id)["args"]["model"] == "test-model"  # CLI override wins
+        assert jobs.read(job_id)["args"]["provider"]["model"] == "test-model"  # CLI override wins
 
     def test_challenge_checks_modified_statement(self, no_spawn):
         led, claim = self._seed_ledger()

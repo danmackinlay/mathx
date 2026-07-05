@@ -34,20 +34,17 @@ server = FastMCP(
 )
 
 
-def _provider(profile: str | None, **overrides) -> dict | None:
-    """Resolved provider settings, or None (caller returns the error dict)."""
+def _provider(
+    profile: str | None, **overrides
+) -> tuple[config.ProviderConfig | None, dict | None]:
+    """(provider, None) on success, (None, error-dict) on failure — resolved
+    exactly once. Also exports a profile's concurrency cap for spawned workers."""
     try:
-        return config.resolve_provider(profile=profile, **overrides)
-    except ValueError:
-        return None
-
-
-def _provider_error(profile: str | None, **overrides) -> dict:
-    try:
-        config.resolve_provider(profile=profile, **overrides)
-        return {"status": "error", "error": "provider resolution failed"}  # pragma: no cover
+        p = config.resolve_provider(profile=profile, **overrides)
     except ValueError as e:
-        return {"status": "error", "error": str(e)}
+        return None, {"status": "error", "error": str(e)}
+    config.export_concurrency(p)
+    return p, None
 
 
 def _handle(record: dict, **extra) -> dict:
@@ -72,9 +69,9 @@ def submit_solve(
     """Fan a problem out to k samples and vote on the boxed answer. Returns a
     job handle immediately; poll with poll_job. max_k enables auto-escalation
     on weak votes. profile selects a mathx.toml profile (else environment)."""
-    p = _provider(profile, model=model, base_url=base_url)
+    p, err = _provider(profile, model=model, base_url=base_url)
     if p is None:
-        return _provider_error(profile, model=model, base_url=base_url)
+        return err
     record = jobs.submit(
         kind="solve",
         args={
@@ -82,17 +79,10 @@ def submit_solve(
             "strategy": strategy,
             "k": k,
             "max_k": max_k,
-            "model": p["model"],
-            "base_url": p["base_url"],
-            "temperature": p["temperature"],
-            "max_tokens": p["max_tokens"],
-            "top_p": p["top_p"],
-            "extra_body": p["extra_body"],
-            "max_retries": p["max_retries"],
-            "equiv_judge_model": p["equiv_judge_model"],
+            "provider": p.to_args(),
         },
     )
-    jobs.spawn_worker(record["job_id"], api_key=p["api_key"])
+    jobs.spawn_worker(record["job_id"], api_key=p.api_key)
     return _handle(record)
 
 
@@ -101,6 +91,7 @@ def submit_check(
     claim: str,
     tir_k: int = 1,
     grade_k: int = 8,
+    exec_timeout_s: float = 60.0,
     profile: str | None = None,
     model: str | None = None,
     base_url: str | None = None,
@@ -109,27 +100,20 @@ def submit_check(
     (executed locally) and grade_k samples vote TRUE/FALSE. The result carries
     supported/refuted/conflict/unclear with the full audit trail. Returns a job
     handle immediately; poll with poll_job."""
-    p = _provider(profile, model=model, base_url=base_url)
+    p, err = _provider(profile, model=model, base_url=base_url)
     if p is None:
-        return _provider_error(profile, model=model, base_url=base_url)
+        return err
     record = jobs.submit(
         kind="check",
         args={
             "claim": claim,
             "tir_k": tir_k,
             "grade_k": grade_k,
-            "exec_timeout_s": 60.0,
-            "model": p["model"],
-            "base_url": p["base_url"],
-            "temperature": p["temperature"],
-            "max_tokens": p["max_tokens"],
-            "meta_model": p["meta_model"],
-            "top_p": p["top_p"],
-            "extra_body": p["extra_body"],
-            "max_retries": p["max_retries"],
+            "exec_timeout_s": exec_timeout_s,
+            "provider": p.to_args(),
         },
     )
-    jobs.spawn_worker(record["job_id"], api_key=p["api_key"])
+    jobs.spawn_worker(record["job_id"], api_key=p.api_key)
     return _handle(record)
 
 
@@ -139,6 +123,7 @@ def submit_argue(
     rounds: int = 2,
     tir_k: int = 1,
     grade_k: int = 4,
+    exec_timeout_s: float = 60.0,
     profile: str | None = None,
     model: str | None = None,
     base_url: str | None = None,
@@ -147,10 +132,10 @@ def submit_argue(
     verdict badge. Returns a job handle AND a ledger_id immediately; the ledger
     file updates live as claims are checked — watch it with get_ledger while
     the job runs."""
-    p = _provider(profile, model=model, base_url=base_url)
+    p, err = _provider(profile, model=model, base_url=base_url)
     if p is None:
-        return _provider_error(profile, model=model, base_url=base_url)
-    led = ledger.create(problem, model=p["model"], base_url=p["base_url"], rounds_max=rounds)
+        return err
+    led = ledger.create(problem, model=p.model, base_url=p.base_url, rounds_max=rounds)
     record = jobs.submit(
         kind="argue",
         args={
@@ -158,19 +143,12 @@ def submit_argue(
             "rounds": rounds,
             "tir_k": tir_k,
             "grade_k": grade_k,
-            "exec_timeout_s": 60.0,
+            "exec_timeout_s": exec_timeout_s,
             "ledger_id": led["ledger_id"],
-            "model": p["model"],
-            "base_url": p["base_url"],
-            "temperature": p["temperature"],
-            "max_tokens": p["max_tokens"],
-            "meta_model": p["meta_model"],
-            "top_p": p["top_p"],
-            "extra_body": p["extra_body"],
-            "max_retries": p["max_retries"],
+            "provider": p.to_args(),
         },
     )
-    jobs.spawn_worker(record["job_id"], api_key=p["api_key"])
+    jobs.spawn_worker(record["job_id"], api_key=p.api_key)
     return _handle(record, ledger_id=led["ledger_id"])
 
 
@@ -261,26 +239,18 @@ def list_ledgers(limit: int = 20) -> list[dict]:
 
 def _attach(ledger_id: str, claim_id: str, *, kind: str, objection: str | None,
             tir_k: int, grade_k: int, profile: str | None) -> dict:
-    p = _provider(profile, require=("api_key",))
+    p, err = _provider(profile, require=("api_key",))
     if p is None:
-        return _provider_error(profile, require=("api_key",))
+        return err
     try:
         led = ledger.read(ledger_id)
         claim = ledger.get_claim(led, claim_id)
     except KeyError as e:
         return {"status": "error", "error": str(e)}
-    text = None
-    if objection:
-        text = (
-            f"{claim['text']}\n\nWhen judging this claim, specifically address the "
-            f"following objection: {objection}"
-        )
+    text = ledger.challenge_text(claim, objection) if objection else None
     job_id = ledger.attach_check(
-        led, claim, api_key=p["api_key"], round_=led["rounds_used"], kind=kind,
-        text_override=text, model=p["model"], base_url=p["base_url"],
-        tir_k=tir_k, grade_k=grade_k, temperature=p["temperature"],
-        max_tokens=p["max_tokens"], meta_model=p["meta_model"], top_p=p["top_p"],
-        extra_body=p["extra_body"], max_retries=p["max_retries"],
+        led, claim, provider=p, round_=led["rounds_used"], kind=kind,
+        text_override=text, tir_k=tir_k, grade_k=grade_k,
     )
     return {"job_id": job_id, "ledger_id": ledger_id, "claim_id": claim_id, "status": "running"}
 

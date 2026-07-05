@@ -22,9 +22,8 @@ import re
 import time
 from dataclasses import dataclass
 
-from openai import AsyncOpenAI
-
-from mathx.engine import Sample, _one_sample, concurrency_cap, sample_to_dict
+from mathx.config import ProviderConfig
+from mathx.engine import Sample, concurrency_cap, make_client, one_sample, sample_to_dict
 from mathx.executor import ExecResult, LocalExecutor, get_executor
 
 CHECKER_SYSTEM = (
@@ -212,36 +211,26 @@ def _summarize(
 async def check(
     claim: str,
     *,
-    model: str,
-    base_url: str,
-    api_key: str,
+    provider: ProviderConfig,
     tir_k: int = 1,
     grade_k: int = 8,
-    temperature: float | None = None,
-    max_tokens: int = 16000,
     exec_timeout_s: float = 60.0,
     executor: LocalExecutor | None = None,
-    meta_model: str | None = None,
-    top_p: float | None = None,
-    extra_body: dict | None = None,
-    max_retries: int | None = None,
 ) -> CheckResult:
     """Run the enabled verdict lanes concurrently and aggregate.
 
     Set ``tir_k=0`` or ``grade_k=0`` to switch a lane off (not both).
-    ``meta_model`` (default: ``model``) authors the checker scripts — a
-    meta-task that narrow maths specialists are routinely bad at; grading
-    stays on ``model``, which specialists are good at.
+    ``provider.meta_model`` (default: ``provider.model``) authors the checker
+    scripts — a meta-task that narrow maths specialists are routinely bad at;
+    grading stays on ``model``, which specialists are good at.
     """
     if tir_k <= 0 and grade_k <= 0:
         raise ValueError("at least one lane must be on: tir_k or grade_k must be > 0")
     t0 = time.monotonic()
-    client_kwargs: dict = {"base_url": base_url, "api_key": api_key}
-    if max_retries is not None:
-        client_kwargs["max_retries"] = max_retries
-    client = AsyncOpenAI(**client_kwargs)
+    model, meta_model = provider.model, provider.meta_model
+    client = make_client(provider)
     executor = executor or get_executor()
-    temp = 0.7 if temperature is None else temperature
+    temp = 0.7 if provider.temperature is None else provider.temperature
     prompt = f"Claim:\n{claim}"
     cap = concurrency_cap()
     sem = asyncio.Semaphore(cap) if cap else None
@@ -249,13 +238,15 @@ async def check(
     async def sample(use_model: str, system: str) -> Sample:
         if sem is not None:
             async with sem:
-                return await _one_sample(
-                    client, use_model, prompt, temperature=temp, max_tokens=max_tokens,
-                    system=system, top_p=top_p, extra_body=extra_body,
+                return await one_sample(
+                    client, use_model, prompt, temperature=temp,
+                    max_tokens=provider.max_tokens, system=system,
+                    top_p=provider.top_p, extra_body=provider.extra_body,
                 )
-        return await _one_sample(
-            client, use_model, prompt, temperature=temp, max_tokens=max_tokens,
-            system=system, top_p=top_p, extra_body=extra_body,
+        return await one_sample(
+            client, use_model, prompt, temperature=temp,
+            max_tokens=provider.max_tokens, system=system,
+            top_p=provider.top_p, extra_body=provider.extra_body,
         )
 
     async def one_tir() -> ScriptRun:
@@ -297,7 +288,7 @@ async def check(
         grade_verdict=grade_verdict,
         grade_margin=grade_margin,
         model=model,
-        base_url=base_url,
+        base_url=provider.base_url,
         tir_k=max(0, tir_k),
         grade_k=max(0, grade_k),
         meta_model=meta_model if meta_model and meta_model != model else None,

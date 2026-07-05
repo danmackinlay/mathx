@@ -325,9 +325,15 @@ tests/
   test_*.py    engine, check, executor, jobs, report, MCP, CLI — `uv run pytest`, offline
 ```
 
-The engine is one file by design. Public API: `from mathx import solve` returns a `Result`
-dataclass; `mathx.engine.result_to_dict` is the JSON serialiser used by the CLI. Anything Python
-that wants to call mathx programmatically uses `solve(...)` directly and skips the CLI / file dance.
+The engine is one file by design. Public API: `from mathx import solve, ProviderConfig` —
+`solve(problem, provider=ProviderConfig(model=…, base_url=…, api_key=…), k=16)` returns a
+`Result` dataclass; `mathx.engine.result_to_dict` is the JSON serialiser used by the CLI.
+`ProviderConfig` is the one endpoint bundle every layer shares (engines take it, job records
+store it via `to_args()`, workers rehydrate it via `from_args()`); task-shaped knobs (`k`,
+`strategy`, `tir_k`, `rounds`, …) stay explicit parameters. Anything Python that wants to call
+mathx programmatically uses `solve(...)` directly and skips the CLI / file dance —
+`config.resolve_provider(profile=…)` builds the `ProviderConfig` from flags/profile/env if you
+want the same resolution the CLI does.
 
 ## Known-good models and providers
 
@@ -379,9 +385,12 @@ Either use such a model with `--strategy cot --k 1`, or specify higher temperatu
 
 - **A new strategy.** Add a branch to `solve()`'s strategy dispatch in `engine.py` and a
   `STRATEGIES` entry in `cli.py`. If the strategy changes how votes accumulate (like
-  `self_verify`'s confidence-weighting), the hook is `_cluster_and_vote()` reading
+  `self_verify`'s confidence-weighting), the hook is `_cluster()`/`_tally()` reading
   `Sample.confidence`.
 - **A new endpoint.** No code change — pass `--base-url` and `--model`, or set the env vars.
+- **A new endpoint knob.** One field on `ProviderConfig` in `config.py` (plus its `pick()` line
+  in `resolve_provider` and, if flag-worthy, a `_ENDPOINT_OPTIONS` entry in `cli.py`) — it then
+  reaches every engine, job record, worker, and surface without further threading.
 - **TIR (tool-integrated reasoning).** Currently deferred. Would require a Python kernel + fenced-
   code template parsing + splice-back. The calling agent already has a Python tool, so adding TIR
   here mostly matters when a specialist model that *only* talks via fenced code (e.g.

@@ -46,7 +46,7 @@ class TestTools:
         assert no_spawn == [out["job_id"]]
         record = jobs.read(out["job_id"])
         assert record["kind"] == "solve"
-        assert record["args"]["model"] == "test-model"
+        assert record["args"]["provider"]["model"] == "test-model"
         assert record["args"]["k"] == 4
 
     def test_submit_without_provider_errors(self, no_spawn, monkeypatch):
@@ -66,7 +66,7 @@ class TestTools:
         monkeypatch.setenv("MATHX_API_KEY", "k")
         out = mcp_server.submit_solve("1+1?", profile="p")
         assert out["status"] == "running"
-        assert jobs.read(out["job_id"])["args"]["model"] == "prof-model"
+        assert jobs.read(out["job_id"])["args"]["provider"]["model"] == "prof-model"
 
     def test_submit_check(self, no_spawn, provider_env):
         out = mcp_server.submit_check("2+2=4", grade_k=6)

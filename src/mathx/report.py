@@ -197,7 +197,7 @@ def render_check_report(run: dict) -> str:
     return "\n".join(lines)
 
 
-_STATE_GLYPH = {
+STATE_GLYPH = {
     "supported": "✓",
     "refuted": "✗",
     "conflict": "!",
@@ -228,7 +228,7 @@ def render_ledger(led: dict, state_of) -> str:
 
         def emit(claim: dict, indent: str) -> None:
             state, detail = state_of(claim)
-            glyph = _STATE_GLYPH.get(state, "?")
+            glyph = STATE_GLYPH.get(state, "?")
             lines.append(
                 f"{indent}{claim['id']:>4}  {glyph} {state:<10} {_one_line(claim['text'], 76)}"
             )

@@ -17,6 +17,7 @@ import sys
 from mathx import jobs
 from mathx.argue import argue
 from mathx.check import check, check_result_to_dict
+from mathx.config import ProviderConfig
 from mathx.engine import result_to_dict, solve
 from mathx.ledger import state_counts
 
@@ -30,22 +31,15 @@ async def run_job(job_id: str) -> dict:
     if not api_key:
         return jobs.fail(job_id, error="no API key in environment: set MATHX_API_KEY (or OPENAI_API_KEY)")
     try:
+        provider = ProviderConfig.from_args(args["provider"], api_key=api_key)
         if kind == "argue":
             led = await argue(
                 args["problem"],
-                model=args["model"],
-                base_url=args["base_url"],
-                api_key=api_key,
+                provider=provider,
                 rounds=args.get("rounds", 2),
                 tir_k=args.get("tir_k", 1),
                 grade_k=args.get("grade_k", 4),
-                temperature=args.get("temperature"),
-                max_tokens=args.get("max_tokens", 16000),
                 exec_timeout_s=args.get("exec_timeout_s", 60.0),
-                meta_model=args.get("meta_model"),
-                top_p=args.get("top_p"),
-                extra_body=args.get("extra_body"),
-                max_retries=args.get("max_retries"),
                 ledger_id=args.get("ledger_id"),
                 poll_s=args.get("poll_s", 2.0),
             )
@@ -60,35 +54,19 @@ async def run_job(job_id: str) -> dict:
         elif kind == "check":
             result = await check(
                 args["claim"],
-                model=args["model"],
-                base_url=args["base_url"],
-                api_key=api_key,
+                provider=provider,
                 tir_k=args.get("tir_k", 1),
                 grade_k=args.get("grade_k", 8),
-                temperature=args.get("temperature"),
-                max_tokens=args.get("max_tokens", 16000),
                 exec_timeout_s=args.get("exec_timeout_s", 60.0),
-                meta_model=args.get("meta_model"),
-                top_p=args.get("top_p"),
-                extra_body=args.get("extra_body"),
-                max_retries=args.get("max_retries"),
             )
             payload = check_result_to_dict(result)
         elif kind == "solve":
             result = await solve(
                 args["problem"],
-                model=args["model"],
-                base_url=args["base_url"],
-                api_key=api_key,
+                provider=provider,
                 k=args["k"],
                 strategy=args["strategy"],
-                temperature=args["temperature"],
-                max_tokens=args["max_tokens"],
                 max_k=args["max_k"],
-                top_p=args.get("top_p"),
-                extra_body=args.get("extra_body"),
-                max_retries=args.get("max_retries"),
-                equiv_judge_model=args.get("equiv_judge_model"),
             )
             payload = result_to_dict(result)
         else:

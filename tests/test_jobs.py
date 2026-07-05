@@ -9,21 +9,19 @@ import sys
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from conftest import provider
 
 from mathx import jobs, worker
 from mathx.check import CHECKER_SYSTEM, GRADER_SYSTEM
 
 
-def submit(problem: str = "1+1?", **overrides) -> dict:
+def submit(problem: str = "1+1?", *, provider_overrides: dict | None = None, **overrides) -> dict:
     args = {
         "problem": problem,
         "strategy": "maj@k",
         "k": 16,
-        "model": "test-model",
-        "base_url": "http://fake.test/v1",
-        "temperature": None,
-        "max_tokens": 16000,
         "max_k": None,
+        "provider": provider(**(provider_overrides or {})).to_args(),
         **overrides,
     }
     return jobs.submit(kind="solve", args=args)
@@ -35,10 +33,7 @@ def submit_check(claim: str = "2+2=4", **overrides) -> dict:
         "tir_k": 1,
         "grade_k": 2,
         "exec_timeout_s": 30.0,
-        "model": "test-model",
-        "base_url": "http://fake.test/v1",
-        "temperature": None,
-        "max_tokens": 16000,
+        "provider": provider().to_args(),
         **overrides,
     }
     return jobs.submit(kind="check", args=args)
@@ -186,7 +181,9 @@ class TestRunJob:
     def test_worker_subprocess_entry(self, isolated_jobs_dir):
         # the real `python -m mathx.worker <id>` path, pointed at a dead endpoint:
         # the sample errors (connection refused), the job still finalizes cleanly
-        record = submit(base_url="http://127.0.0.1:9/v1", strategy="cot", k=1)
+        record = submit(
+            provider_overrides={"base_url": "http://127.0.0.1:9/v1"}, strategy="cot", k=1
+        )
         env = os.environ | {
             "MATHX_JOBS_DIR": str(isolated_jobs_dir),
             "MATHX_API_KEY": "test-key",

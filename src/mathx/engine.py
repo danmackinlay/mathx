@@ -20,6 +20,8 @@ from typing import Literal
 from math_verify import parse, verify
 from openai import AsyncOpenAI
 
+from mathx.config import ProviderConfig
+
 Strategy = Literal["cot", "maj@k", "self_verify"]
 
 THINK_BLOCK = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
@@ -70,6 +72,16 @@ class Result:
     tokens_in_total: int = 0
     tokens_out_total: int = 0
     elapsed_ms_total: int = 0
+
+
+def make_client(provider: ProviderConfig) -> AsyncOpenAI:
+    """One place that turns a ProviderConfig into an OpenAI client."""
+    kwargs: dict = {"base_url": provider.base_url, "api_key": provider.api_key}
+    if provider.max_retries is not None:
+        # SDK default (2) suits cloud endpoints; 0 suits a single-user local
+        # server, where retrying a doomed long generation only amplifies load
+        kwargs["max_retries"] = provider.max_retries
+    return AsyncOpenAI(**kwargs)
 
 
 def concurrency_cap() -> int | None:
@@ -152,7 +164,7 @@ def extract_boxed(text: str | None) -> str | None:
     return None
 
 
-async def _one_sample(
+async def one_sample(
     client: AsyncOpenAI,
     model: str,
     problem: str,
@@ -282,12 +294,6 @@ def _tally(clusters: list[dict]) -> tuple[str | None, str, dict[str, float], int
     return winner, margin, votes, sum(c["judge_merges"] for c in clusters)
 
 
-def _cluster_and_vote(samples: list[Sample]) -> tuple[str | None, str, dict[str, float]]:
-    """Cluster and tally without the judge pass (the CAS-only vote)."""
-    winner, margin, votes, _ = _tally(_cluster(samples))
-    return winner, margin, votes
-
-
 EQUIV_JUDGE_SYSTEM = (
     # pairwise framing cribbed from openai/simple-evals EQUALITY_TEMPLATE (MIT);
     # problem context + Judgement-line format from NeMo-Skills' judge/math.yaml
@@ -316,7 +322,7 @@ async def _judge_equal(client, model: str, problem: str, a: str, b: str, *, max_
             f"Problem:\n{problem}\n\nExpression 1:\n{x}\n\nExpression 2:\n{y}\n\n"
             "Are Expression 1 and Expression 2 mathematically equivalent answers to this problem?"
         )
-        s = await _one_sample(
+        s = await one_sample(
             client, model, user, temperature=0.0, max_tokens=max_tokens, system=EQUIV_JUDGE_SYSTEM
         )
         hits = _JUDGEMENT.findall(s.text or "")
@@ -366,25 +372,19 @@ def _winner_share(answer: str | None, votes: dict[str, float]) -> float:
 async def solve(
     problem: str,
     *,
-    model: str,
-    base_url: str,
-    api_key: str,
+    provider: ProviderConfig,
     k: int = 16,
     strategy: Strategy = "maj@k",
-    temperature: float | None = None,
-    max_tokens: int = 16000,
     max_k: int | None = None,
-    top_p: float | None = None,
-    extra_body: dict | None = None,
-    max_retries: int | None = None,
-    equiv_judge_model: str | None = None,
     on_sample: Callable[[Sample, int, int], None] | None = None,
     on_escalate: Callable[[str, int], None] | None = None,
 ) -> Result:
     """Run the strategy, cluster, and return a Result.
 
+    ``provider`` carries every endpoint knob (model, base_url, api_key,
+    temperature, …) — build one directly or via ``config.resolve_provider``.
     For ``cot``: k is ignored, T defaults to 0.0. For ``maj@k`` / ``self_verify``:
-    T defaults to 0.7. Pass an explicit ``temperature`` to override.
+    T defaults to 0.7. Set ``provider.temperature`` to override.
 
     ``max_k`` turns on auto-escalation: after voting, if the winner holds no
     strict majority of the vote weight (a 6/5/5-style split) OR fewer than half
@@ -400,12 +400,8 @@ async def solve(
     margin triggers another round.
     """
     t0 = time.monotonic()
-    client_kwargs: dict = {"base_url": base_url, "api_key": api_key}
-    if max_retries is not None:
-        # SDK default (2) suits cloud endpoints; 0 suits a single-user local
-        # server, where retrying a doomed long generation only amplifies load
-        client_kwargs["max_retries"] = max_retries
-    client = AsyncOpenAI(**client_kwargs)
+    model, temperature = provider.model, provider.temperature
+    client = make_client(provider)
 
     if strategy == "cot":
         kk, temp = 1, (0.0 if temperature is None else temperature)
@@ -426,9 +422,9 @@ async def solve(
         if sem is not None:
             await sem.acquire()
         try:
-            s = await _one_sample(
-                client, model, problem, temperature=temp, max_tokens=max_tokens,
-                top_p=top_p, extra_body=extra_body,
+            s = await one_sample(
+                client, model, problem, temperature=temp, max_tokens=provider.max_tokens,
+                top_p=provider.top_p, extra_body=provider.extra_body,
             )
             if strategy == "self_verify":
                 if s.text is None or s.boxed is None:
@@ -448,10 +444,10 @@ async def solve(
         new = await asyncio.gather(*[one() for _ in range(planned - len(samples))])
         samples.extend(new)
         clusters = _cluster(samples)
-        if equiv_judge_model and len(clusters) > 1:
+        if provider.equiv_judge_model and len(clusters) > 1:
             await _judge_merge_pass(
-                client, equiv_judge_model, problem, clusters,
-                max_tokens=max_tokens, cache=judge_cache,
+                client, provider.equiv_judge_model, problem, clusters,
+                max_tokens=provider.max_tokens, cache=judge_cache,
             )
         winner, margin, votes, judge_merges = _tally(clusters)
         if max_k is None or strategy == "cot" or winner is None:
@@ -472,7 +468,7 @@ async def solve(
         samples=samples,
         strategy=strategy,
         model=model,
-        base_url=base_url,
+        base_url=provider.base_url,
         k=len(samples),
         problem=problem,
         escalations=escalations,

@@ -6,12 +6,11 @@ import asyncio
 from itertools import count
 
 import pytest
+from conftest import provider
 
 from mathx import jobs, ledger
 from mathx.argue import DECOMPOSER_SYSTEM, argue, expand_claim, parse_decomposition
 from mathx.check import GRADER_SYSTEM
-
-PROVIDER = dict(model="test-model", base_url="http://fake.test/v1", api_key="test-key")
 
 
 def decomp(*claims: str) -> str:
@@ -29,7 +28,7 @@ def run_argue(problem: str = "why?", **kwargs):
     kwargs.setdefault("grade_k", 1)
     kwargs.setdefault("poll_s", 0.01)
     kwargs.setdefault("spawn", jobs.spawn_worker)  # the inline_workers patch
-    return asyncio.run(argue(problem, **PROVIDER, **kwargs))
+    return asyncio.run(argue(problem, provider=provider(), **kwargs))
 
 
 class TestParseDecomposition:
@@ -218,7 +217,8 @@ class TestExpand:
         spawned = []
         children = asyncio.run(
             expand_claim(
-                led, parent, api_key="test-key", tir_k=0, grade_k=1,
+                led, parent, provider=provider(model=None, base_url=None),
+                tir_k=0, grade_k=1,
                 spawn=lambda jid, **kw: spawned.append(jid),
             )
         )

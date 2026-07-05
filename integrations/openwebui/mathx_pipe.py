@@ -88,31 +88,20 @@ class Pipe:
             p = config.resolve_provider(profile=self.valves.PROFILE or None)
         except ValueError as e:
             return f"mathx: {e}"
-
-        common = dict(
-            model=p["model"],
-            base_url=p["base_url"],
-            api_key=p["api_key"],
-            temperature=p["temperature"],
-            max_tokens=p["max_tokens"],
-            top_p=p["top_p"],
-            extra_body=p["extra_body"],
-            max_retries=p["max_retries"],
-        )
+        config.export_concurrency(p)
 
         try:
             if mode == "solve":
                 status(f"fanning out {self.valves.SOLVE_K} samples…")
                 result = await solve(
                     prompt,
+                    provider=p,
                     k=self.valves.SOLVE_K,
                     max_k=self.valves.SOLVE_MAX_K or None,
-                    equiv_judge_model=p["equiv_judge_model"],
                     on_sample=lambda s, done, planned: status(
                         f"sample {done}/{planned}" + (f" — {s.boxed}" if s.boxed else "")
                     ),
                     on_escalate=lambda margin, n: status(f"margin {margin} weak — escalating to k={n}"),
-                    **common,
                 )
                 status("vote complete", done=True)
                 return (
@@ -124,10 +113,9 @@ class Pipe:
                 status("checking claim (script + grade vote)…")
                 result = await check(
                     prompt,
+                    provider=p,
                     tir_k=self.valves.CHECK_TIR_K,
                     grade_k=self.valves.CHECK_GRADE_K,
-                    meta_model=p["meta_model"],
-                    **common,
                 )
                 status(f"verdict: {result.status}", done=True)
                 return (
@@ -138,12 +126,11 @@ class Pipe:
             if mode == "argue":
                 led = await argue(
                     prompt,
+                    provider=p,
                     rounds=self.valves.ARGUE_ROUNDS,
                     tir_k=self.valves.ARGUE_TIR_K,
                     grade_k=self.valves.ARGUE_GRADE_K,
-                    meta_model=p["meta_model"],
                     on_event=lambda msg: status(msg),
-                    **common,
                 )
                 status("ledger assembled", done=True)
                 return (

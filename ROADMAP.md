@@ -19,7 +19,7 @@ Four properties of the thin oracle meant the workstation could be grown around i
 1. `solve()` in [src/mathx/engine.py](src/mathx/engine.py) was already async (`asyncio.gather` over k samples).
 2. Every run already serialized to a complete JSON audit record (`result_to_dict`: answer, margin, votes, per-sample traces).
 3. The [MCP design notes](DESIGN_NOTES.md#mcp-server) had already worked out the async-handle pattern (submit/check + file-per-job store).
-4. Crucially: `math_verify`-based equivalence checking in `_cluster_and_vote` was already a *claim-checker primitive* — the oracle could become the inner call of a claim-level loop without changing identity.
+4. Crucially: `math_verify`-based equivalence checking in the engine's `_cluster` pass was already a *claim-checker primitive* — the oracle could become the inner call of a claim-level loop without changing identity.
 
 The pivot that followed: grow the workstation **around a persistent job store**, not by bloating the engine. One-shot CLI calls became named, inspectable runs; every surface (CLI report, MCP `poll_job`, Open WebUI) is just a reader of the same files.
 

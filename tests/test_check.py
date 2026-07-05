@@ -6,6 +6,7 @@ import asyncio
 from itertools import count
 
 import pytest
+from conftest import provider
 
 from mathx.check import (
     CHECKER_SYSTEM,
@@ -16,8 +17,6 @@ from mathx.check import (
     parse_script_verdict,
 )
 from mathx.executor import ExecResult
-
-PROVIDER = dict(model="test-model", base_url="http://fake.test/v1", api_key="test-key")
 
 PASS_SCRIPT = 'reply with:\n```python\nprint("VERDICT: PASS")\n```'
 FAIL_SCRIPT = (
@@ -35,7 +34,7 @@ def cycler(replies: list[str]):
 
 
 def run_check(claim: str = "2+2=4", **kwargs):
-    return asyncio.run(check(claim, **PROVIDER, **kwargs))
+    return asyncio.run(check(claim, provider=provider(), **kwargs))
 
 
 def exec_result(stdout: str = "", stderr: str = "", exit_code: int | None = 0, timed_out: bool = False):

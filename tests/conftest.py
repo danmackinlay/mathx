@@ -17,9 +17,8 @@ import httpx
 import pytest
 from openai import AsyncOpenAI
 
-import mathx.argue as argue_mod
-import mathx.check as check_mod
 import mathx.engine as engine
+from mathx.config import ProviderConfig
 
 
 def _completion(model: str, content: str) -> dict:
@@ -127,9 +126,17 @@ def fake_endpoint(monkeypatch):
                 **client_kwargs,
             )
 
+        # check/argue build clients via engine.make_client, so patching the
+        # engine's AsyncOpenAI covers every module
         monkeypatch.setattr(engine, "AsyncOpenAI", make_client)
-        monkeypatch.setattr(check_mod, "AsyncOpenAI", make_client)
-        monkeypatch.setattr(argue_mod, "AsyncOpenAI", make_client)
         return ep
 
     return install
+
+
+def provider(**kw) -> ProviderConfig:
+    """A test ProviderConfig with sane fake-endpoint defaults."""
+    kw.setdefault("model", "test-model")
+    kw.setdefault("base_url", "http://fake.test/v1")
+    kw.setdefault("api_key", "test-key")
+    return ProviderConfig(**kw)

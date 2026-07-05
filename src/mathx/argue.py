@@ -12,12 +12,11 @@ from __future__ import annotations
 import asyncio
 import re
 from collections.abc import Callable
-
-from openai import AsyncOpenAI
+from dataclasses import replace
 
 from mathx import jobs, ledger
-from mathx.engine import _one_sample
-from mathx.engine import concurrency_cap as _concurrency_cap
+from mathx.config import ProviderConfig
+from mathx.engine import concurrency_cap, make_client, one_sample
 
 DECOMPOSER_SYSTEM = (
     "You are a careful mathematician structuring a checkable argument.\n"
@@ -102,7 +101,7 @@ async def _decompose(
     *transcript* (the ledger keeps them: the argument's provenance is audit
     trail like everything else)."""
     for attempt in (1, 2):
-        s = await _one_sample(
+        s = await one_sample(
             client, model, user, temperature=temperature, max_tokens=max_tokens,
             system=DECOMPOSER_SYSTEM,
         )
@@ -145,20 +144,12 @@ def _refine_user(problem: str, led: dict, current: list[dict]) -> str:
 async def argue(
     problem: str,
     *,
-    model: str,
-    base_url: str,
-    api_key: str,
+    provider: ProviderConfig,
     rounds: int = 2,
     tir_k: int = 1,
     grade_k: int = 4,
-    temperature: float | None = None,
-    max_tokens: int = 16000,
     exec_timeout_s: float = 60.0,
     poll_s: float = 2.0,
-    meta_model: str | None = None,
-    top_p: float | None = None,
-    extra_body: dict | None = None,
-    max_retries: int | None = None,
     ledger_id: str | None = None,
     spawn=None,
     on_event: Callable[[str], None] | None = None,
@@ -166,23 +157,19 @@ async def argue(
     """Run the loop; return the assembled ledger record.
 
     ``rounds`` = max refine cycles after the initial decomposition.
-    ``meta_model`` (default: ``model``) does the meta-tasks — decomposition
-    here, checker-script authorship inside each check job — so a narrow
-    specialist can keep the grading seat without being handed jobs it is bad
-    at. ``ledger_id`` adopts a pre-created (still-empty) ledger, so a
+    ``provider.meta_model`` (default: ``provider.model``) does the meta-tasks —
+    decomposition here, checker-script authorship inside each check job — so a
+    narrow specialist can keep the grading seat without being handed jobs it is
+    bad at. ``ledger_id`` adopts a pre-created (still-empty) ledger, so a
     submitter can hand the id to its caller before the loop starts. ``spawn``
     overrides how check workers start (tests run them in-process).
     """
     emit = on_event or (lambda _msg: None)
-    client_kwargs: dict = {"base_url": base_url, "api_key": api_key}
-    if max_retries is not None:
-        client_kwargs["max_retries"] = max_retries
-    client = AsyncOpenAI(**client_kwargs)
-    temp = 0.7 if temperature is None else temperature
+    client = make_client(provider)
+    temp = 0.7 if provider.temperature is None else provider.temperature
     check_kwargs = dict(
-        api_key=api_key, tir_k=tir_k, grade_k=grade_k, exec_timeout_s=exec_timeout_s,
-        temperature=temperature, max_tokens=max_tokens, meta_model=meta_model,
-        top_p=top_p, extra_body=extra_body, max_retries=max_retries, spawn=spawn,
+        provider=provider, tir_k=tir_k, grade_k=grade_k,
+        exec_timeout_s=exec_timeout_s, spawn=spawn,
     )
 
     if ledger_id is not None:
@@ -190,7 +177,9 @@ async def argue(
         if led.get("claims"):
             raise ValueError(f"ledger {ledger_id} already has claims; argue starts fresh ones")
     else:
-        led = ledger.create(problem, model=model, base_url=base_url, rounds_max=rounds)
+        led = ledger.create(
+            problem, model=provider.model, base_url=provider.base_url, rounds_max=rounds
+        )
     led["decompositions"] = []
     emit(f"ledger: {led['ledger_id']}")
 
@@ -198,7 +187,7 @@ async def argue(
     # server (live e2e: 23 simultaneous jobs vs 3 server slots = mass timeouts);
     # each worker also self-caps its requests via the same env var
     per_job = max(1, tir_k + grade_k)
-    cap = _concurrency_cap()
+    cap = concurrency_cap()
     max_jobs = max(1, cap // per_job) if cap else None
 
     user = f"Problem:\n{problem}"
@@ -206,7 +195,8 @@ async def argue(
         led["rounds_used"] = rnd
         emit(f"round {rnd}: {'decomposing' if rnd == 0 else 'refining'}…")
         argument, texts = await _decompose(
-            client, meta_model or model, user, temperature=temp, max_tokens=max_tokens,
+            client, provider.meta_model or provider.model, user,
+            temperature=temp, max_tokens=provider.max_tokens,
             emit=emit, transcript=led["decompositions"],
         )
         led["argument"] = argument
@@ -234,7 +224,7 @@ async def argue(
         def launch_up_to_cap() -> None:
             while queued and (max_jobs is None or len(in_flight) < max_jobs):
                 job_id = queued.pop(0)
-                (spawn or jobs.spawn_worker)(job_id, api_key=api_key)
+                (spawn or jobs.spawn_worker)(job_id, api_key=provider.api_key)
                 in_flight.add(job_id)
 
         launch_up_to_cap()
@@ -286,40 +276,33 @@ async def expand_claim(
     led: dict,
     claim: dict,
     *,
-    api_key: str,
-    model: str | None = None,
-    base_url: str | None = None,
+    provider: ProviderConfig,
     tir_k: int = 1,
     grade_k: int = 4,
-    temperature: float | None = None,
-    max_tokens: int = 16000,
     exec_timeout_s: float = 60.0,
-    meta_model: str | None = None,
-    top_p: float | None = None,
-    extra_body: dict | None = None,
-    max_retries: int | None = None,
     spawn=None,
 ) -> list[dict]:
     """Decompose one claim into checked sub-claims (``mathx ledger expand``).
 
-    model/base_url default to the ledger's; overriding is legitimate regime
-    mixing. The sub-decomposition itself runs on ``meta_model`` (default:
-    the resolved model) — it's a meta-task.
+    ``provider.model``/``base_url`` default to the ledger's; overriding is
+    legitimate regime mixing. The sub-decomposition itself runs on
+    ``meta_model`` (default: the resolved model) — it's a meta-task.
     """
-    model = model or led["model"]
-    base_url = base_url or led["base_url"]
-    client_kwargs: dict = {"base_url": base_url, "api_key": api_key}
-    if max_retries is not None:
-        client_kwargs["max_retries"] = max_retries
-    client = AsyncOpenAI(**client_kwargs)
-    temp = 0.7 if temperature is None else temperature
+    provider = replace(
+        provider,
+        model=provider.model or led["model"],
+        base_url=provider.base_url or led["base_url"],
+    )
+    client = make_client(provider)
+    temp = 0.7 if provider.temperature is None else provider.temperature
     user = (
         "Decompose the following claim into 2–5 sub-claims that together imply it. "
         "Treat the claim as the problem.\n\n"
         f"Claim:\n{claim['text']}"
     )
     _, texts = await _decompose(
-        client, meta_model or model, user, temperature=temp, max_tokens=max_tokens,
+        client, provider.meta_model or provider.model, user,
+        temperature=temp, max_tokens=provider.max_tokens,
         emit=lambda _m: None,
     )
     rnd = led["rounds_used"]
@@ -328,9 +311,7 @@ async def expand_claim(
     ]
     for child in children:
         ledger.attach_check(
-            led, child, round_=rnd, api_key=api_key, model=model, base_url=base_url,
-            tir_k=tir_k, grade_k=grade_k, exec_timeout_s=exec_timeout_s,
-            temperature=temperature, max_tokens=max_tokens, meta_model=meta_model,
-            top_p=top_p, extra_body=extra_body, max_retries=max_retries, spawn=spawn,
+            led, child, provider=provider, round_=rnd, tir_k=tir_k, grade_k=grade_k,
+            exec_timeout_s=exec_timeout_s, spawn=spawn,
         )
     return children

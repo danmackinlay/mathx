@@ -1,9 +1,10 @@
 """Named profiles: reusable bundles of endpoint + role-model settings.
 
-NOT a provider registry (that stays on the forbidden list): a profile carries
-zero provider-specific logic — it only supplies defaults for flags that already
-exist. Precedence everywhere: explicit flag > profile value > bare environment
-variable > built-in default.
+``resolve_provider`` merges flag > profile > environment into a
+``ProviderConfig`` — the frozen endpoint bundle every engine takes, job records
+store, and workers rehydrate. NOT a provider registry (that stays on the
+forbidden list): a profile carries zero provider-specific logic — it only
+supplies defaults for knobs that already exist.
 
 Discovery: ``mathx.toml`` in the working directory or an ancestor, else
 ``$XDG_CONFIG_HOME/mathx/config.toml`` (default ``~/.config/mathx/config.toml``).
@@ -36,6 +37,7 @@ from __future__ import annotations
 import json
 import os
 import tomllib
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
 PROFILE_KEYS = {
@@ -51,6 +53,52 @@ PROFILE_KEYS = {
     "concurrency",
     "extra_body",
 }
+
+
+@dataclass(frozen=True)
+class ProviderConfig:
+    """One endpoint bundle: every knob that travels with 'which provider'.
+
+    This is the seam that stops knob-threading: engines take a ProviderConfig,
+    job records store ``to_args()``, and the worker rehydrates with
+    ``from_args()``. Task-shaped knobs (k, strategy, tir_k, rounds, …) stay
+    explicit parameters — they describe the work, not the endpoint.
+    """
+
+    model: str | None = None
+    base_url: str | None = None
+    api_key: str | None = None  # never serialized — see to_args()
+    temperature: float | None = None
+    max_tokens: int = 16000
+    top_p: float | None = None
+    extra_body: dict | None = None
+    max_retries: int | None = None
+    meta_model: str | None = None
+    equiv_judge_model: str | None = None
+    concurrency: int | None = None  # advisory; exported via export_concurrency()
+
+    def to_args(self) -> dict:
+        """JSON-safe payload for a job record. The API key NEVER goes to disk
+        (the worker resolves one from its environment); concurrency travels by
+        environment too (export_concurrency), not by record."""
+        d = asdict(self)
+        del d["api_key"], d["concurrency"]
+        return d
+
+    @classmethod
+    def from_args(cls, args: dict, *, api_key: str) -> "ProviderConfig":
+        """Rehydrate from a job record's ``provider`` args; unknown keys are
+        ignored (a newer submitter may know knobs this worker doesn't)."""
+        known = {f.name for f in fields(cls)} - {"api_key"}
+        return cls(api_key=api_key, **{k: v for k, v in args.items() if k in known})
+
+
+def export_concurrency(p: ProviderConfig) -> None:
+    """Publish a profile's concurrency cap to $MATHX_CONCURRENCY (unless already
+    set), so this process AND the workers it spawns self-cap. Explicitly a side
+    effect — called once per surface, never hidden inside resolution."""
+    if p.concurrency and not os.environ.get("MATHX_CONCURRENCY"):
+        os.environ["MATHX_CONCURRENCY"] = str(p.concurrency)
 
 
 def find_config() -> Path | None:
@@ -101,13 +149,15 @@ def resolve_provider(
     meta_model: str | None = None,
     equiv_judge_model: str | None = None,
     require: tuple = ("model", "base_url", "api_key"),
-) -> dict:
-    """Merge explicit values > profile > environment into provider settings.
+) -> ProviderConfig:
+    """Merge explicit values > profile > environment into a ProviderConfig.
 
     Every surface (CLI, MCP server, Open WebUI Pipe) resolves through here.
     ``require`` names keys that must resolve (ledger verbs relax model/base_url
     because the ledger supplies their fallback). Raises ValueError with a
     human-readable message; callers translate to their surface's error type.
+    Pure: exporting a profile's concurrency cap is the caller's explicit step
+    (``export_concurrency``).
     """
     prof = resolve_profile(profile)
 
@@ -139,28 +189,26 @@ def resolve_provider(
     if extra_body is None:
         extra_body = prof.get("extra_body")
 
-    resolved = {
-        "model": pick(model, "model", "MATHX_MODEL"),
-        "base_url": pick(base_url, "base_url", "MATHX_BASE_URL"),
-        "api_key": api_key,
-        "temperature": pick(temperature, "temperature"),
-        "max_tokens": pick(max_tokens, "max_tokens") or 16000,
-        "top_p": pick(top_p, "top_p"),
-        "extra_body": extra_body,
-        "max_retries": prof.get("max_retries"),
-        "meta_model": pick(meta_model, "meta_model"),
-        "equiv_judge_model": pick(equiv_judge_model, "equiv_judge_model"),
-    }
-    # a profile's concurrency reaches this process AND its spawned workers via env
-    if prof.get("concurrency") and not os.environ.get("MATHX_CONCURRENCY"):
-        os.environ["MATHX_CONCURRENCY"] = str(prof["concurrency"])
+    resolved = ProviderConfig(
+        model=pick(model, "model", "MATHX_MODEL"),
+        base_url=pick(base_url, "base_url", "MATHX_BASE_URL"),
+        api_key=api_key,
+        temperature=pick(temperature, "temperature"),
+        max_tokens=pick(max_tokens, "max_tokens") or 16000,
+        top_p=pick(top_p, "top_p"),
+        extra_body=extra_body,
+        max_retries=prof.get("max_retries"),
+        meta_model=pick(meta_model, "meta_model"),
+        equiv_judge_model=pick(equiv_judge_model, "equiv_judge_model"),
+        concurrency=prof.get("concurrency"),
+    )
 
     hints = {
         "model": "model (flag/profile/$MATHX_MODEL)",
         "base_url": "base_url (flag/profile/$MATHX_BASE_URL)",
         "api_key": "api key (flag/profile api_key_env/$MATHX_API_KEY)",
     }
-    missing = [hints[key] for key in require if not resolved.get(key)]
+    missing = [hints[key] for key in require if not getattr(resolved, key)]
     if missing:
         raise ValueError("provider not configured; missing " + "; ".join(missing))
     return resolved

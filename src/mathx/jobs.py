@@ -15,12 +15,13 @@ Record shape:
     {"job_id": "20260703T021530Z-a3f2", "status": "running",
      "started_at": ISO8601, "kind": "solve" | "check", "args": {...}}
 
-``args`` is kind-specific: solve jobs carry {problem, strategy, k, model,
-base_url, temperature, max_tokens, max_k}; check jobs carry {claim, tir_k,
-grade_k, exec_timeout_s, model, base_url, temperature, max_tokens}; argue
-jobs carry the argue() knobs plus a pre-created ledger_id (the ledger is the
-artifact — the job result is a thin pointer to it). Records predating
-``kind`` are treated as solve. When finished, the record gains
+``args`` carries the task knobs for its kind — solve: {problem, strategy, k,
+max_k}; check: {claim, tir_k, grade_k, exec_timeout_s}; argue: those plus
+{rounds, ledger_id} (the ledger is the artifact — the job result is a thin
+pointer to it) — and, for every kind, ``args["provider"]``: the endpoint
+bundle written by ``ProviderConfig.to_args()`` and rehydrated by the worker
+with ``ProviderConfig.from_args()``. Records predating ``kind`` are treated
+as solve. When finished, the record gains
 ``finished_at`` and either ``result`` (exactly what ``--out`` writes for that
 kind) or ``error``.
 

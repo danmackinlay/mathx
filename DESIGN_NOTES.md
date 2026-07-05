@@ -433,7 +433,7 @@ Mechanics and honesty constraints:
   just another model name if the survey favours one.
 - **Cost bound**: judge consulted only for pairs the CAS refused — ≤ new-samples ×
   cluster-reps short calls, pair-cached within a run, subject to `MATHX_CONCURRENCY`.
-- **Engineering note**: `_cluster_and_vote` is sync; the judge makes clustering async. v1
+- **Engineering note**: clustering (`_cluster`) is sync; the judge makes clustering async. v1
   shape: CAS-cluster synchronously as today, then one async judge pass attempting to merge
   singleton clusters into larger ones, re-tally. Keeps the sync path untouched when the
   judge is off.

@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
 from mathx import jobs
+from mathx.config import ProviderConfig
 from mathx.jobs import _write_atomic, new_job_id  # same id + atomic-write conventions
 
 
@@ -108,30 +110,27 @@ def attach_check(
     led: dict,
     claim: dict,
     *,
-    api_key: str,
+    provider: ProviderConfig,
     round_: int,
     kind: str = "check",
     text_override: str | None = None,
-    model: str | None = None,
-    base_url: str | None = None,
     tir_k: int = 1,
     grade_k: int = 4,
     exec_timeout_s: float = 60.0,
-    temperature: float | None = None,
-    max_tokens: int = 16000,
-    meta_model: str | None = None,
-    top_p: float | None = None,
-    extra_body: dict | None = None,
-    max_retries: int | None = None,
     spawn=None,
 ) -> str:
     """Submit a check job for a claim, record the reference, start the worker.
 
-    model/base_url default to the ledger's but may be overridden — rechecking
-    with a different (e.g. stronger) model is legitimate regime mixing.
-    ``text_override`` lets ``challenge`` check a modified statement while the
-    ledger keeps the original claim text.
+    ``provider.model``/``base_url`` default to the ledger's but may be set —
+    rechecking with a different (e.g. stronger) model is legitimate regime
+    mixing. ``text_override`` lets ``challenge`` check a modified statement
+    while the ledger keeps the original claim text.
     """
+    provider = replace(
+        provider,
+        model=provider.model or led["model"],
+        base_url=provider.base_url or led["base_url"],
+    )
     record = jobs.submit(
         kind="check",
         args={
@@ -139,20 +138,21 @@ def attach_check(
             "tir_k": tir_k,
             "grade_k": grade_k,
             "exec_timeout_s": exec_timeout_s,
-            "model": model or led["model"],
-            "base_url": base_url or led["base_url"],
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "meta_model": meta_model,
-            "top_p": top_p,
-            "extra_body": extra_body,
-            "max_retries": max_retries,
+            "provider": provider.to_args(),
         },
     )
     claim["verdicts"].append({"job_id": record["job_id"], "round": round_, "kind": kind})
-    (spawn or jobs.spawn_worker)(record["job_id"], api_key=api_key)
+    (spawn or jobs.spawn_worker)(record["job_id"], api_key=provider.api_key)
     save(led)
     return record["job_id"]
+
+
+def challenge_text(claim: dict, objection: str) -> str:
+    """The text_override a challenge puts to the checkers (CLI and MCP share it)."""
+    return (
+        f"{claim['text']}\n\nWhen judging this claim, specifically address the "
+        f"following objection: {objection}"
+    )
 
 
 def claim_state(claim: dict) -> tuple[str, str]:

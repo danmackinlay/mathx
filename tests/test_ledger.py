@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pytest
+from conftest import provider
 
 from mathx import jobs, ledger
 
@@ -54,7 +55,8 @@ class TestClaimState:
 
         spawned = []
         job_id = ledger.attach_check(
-            led, claim, api_key="k", round_=0, spawn=lambda jid, **kw: spawned.append(jid)
+            led, claim, provider=provider(model=None, base_url=None), round_=0,
+            spawn=lambda jid, **kw: spawned.append(jid)
         )
         assert spawned == [job_id]
         assert ledger.claim_state(claim) == ("checking", "")
@@ -65,7 +67,10 @@ class TestClaimState:
     def test_detail_does_not_repeat_the_status(self):
         led = make_ledger()
         claim = ledger.add_claim(led, "x", round_added=0)
-        job_id = ledger.attach_check(led, claim, api_key="k", round_=0, spawn=lambda *a, **k: None)
+        job_id = ledger.attach_check(
+            led, claim, provider=provider(model=None, base_url=None), round_=0,
+            spawn=lambda *a, **k: None,
+        )
         jobs.finalize(
             job_id,
             result={"kind": "check", "status": "refuted",
@@ -82,7 +87,10 @@ class TestClaimState:
         assert ledger.claim_state(retired) == ("retired", "round 1")
 
         errored = ledger.add_claim(led, "e", round_added=0)
-        job_id = ledger.attach_check(led, errored, api_key="k", round_=0, spawn=lambda *a, **k: None)
+        job_id = ledger.attach_check(
+            led, errored, provider=provider(model=None, base_url=None), round_=0,
+            spawn=lambda *a, **k: None,
+        )
         jobs.fail(job_id, error="boom")
         assert ledger.claim_state(errored) == ("error", "boom")
 
@@ -94,12 +102,12 @@ class TestClaimState:
         led = make_ledger()
         claim = ledger.add_claim(led, "x", round_added=0)
         job_id = ledger.attach_check(
-            led, claim, api_key="k", round_=0, model="stronger-model",
-            spawn=lambda *a, **k: None,
+            led, claim, provider=provider(model="stronger-model", base_url=None),
+            round_=0, spawn=lambda *a, **k: None,
         )
         args = jobs.read(job_id)["args"]
-        assert args["model"] == "stronger-model"
-        assert args["base_url"] == "http://b/v1"  # ledger default kept
+        assert args["provider"]["model"] == "stronger-model"
+        assert args["provider"]["base_url"] == "http://b/v1"  # ledger default kept
 
     def test_state_counts(self):
         led = make_ledger()

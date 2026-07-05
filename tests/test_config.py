@@ -69,6 +69,40 @@ class TestDiscoveryAndLoading:
             config.load_profiles(p)
 
 
+class TestProviderConfig:
+    def test_args_roundtrip_never_carries_the_key(self):
+        p = config.ProviderConfig(
+            model="m", base_url="http://b/v1", api_key="sk-hunter2",
+            temperature=0.3, extra_body={"reasoning": {"effort": "high"}},
+            meta_model="g", concurrency=3,
+        )
+        args = p.to_args()
+        assert "api_key" not in args and "concurrency" not in args
+        assert "hunter2" not in json.dumps(args)
+        back = config.ProviderConfig.from_args(args, api_key="worker-key")
+        assert back == config.ProviderConfig(
+            model="m", base_url="http://b/v1", api_key="worker-key",
+            temperature=0.3, extra_body={"reasoning": {"effort": "high"}}, meta_model="g",
+        )
+
+    def test_from_args_ignores_unknown_keys(self):
+        p = config.ProviderConfig.from_args({"model": "m", "future_knob": 1}, api_key="k")
+        assert p.model == "m"
+
+    def test_resolve_is_pure_export_is_explicit(self, config_dir, monkeypatch):
+        import os
+
+        monkeypatch.setenv("MATHX_API_KEY", "k")
+        monkeypatch.delenv("MATHX_CONCURRENCY", raising=False)
+        p = config.resolve_provider(profile="local")
+        assert p.concurrency == 3
+        assert os.environ.get("MATHX_CONCURRENCY") is None  # resolving mutates nothing
+        config.export_concurrency(p)
+        assert os.environ.get("MATHX_CONCURRENCY") == "3"
+        config.export_concurrency(config.ProviderConfig(concurrency=9))
+        assert os.environ.get("MATHX_CONCURRENCY") == "3"  # an existing setting wins
+
+
 class TestResolveProfile:
     def test_no_profile_is_empty(self, config_dir):
         assert config.resolve_profile(None) == {}

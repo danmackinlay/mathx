@@ -4,9 +4,11 @@ The agent dispatches `mathx solve "<problem>" --strategy maj@k --k 16 --out X.js
 typically via background Bash; the file appears when the fan-out is done; the agent
 reads the answer, margin, and audit trail.
 
-Public API: `mathx.engine.solve(...)`. Everything else is plumbing.
+Public API: `mathx.engine.solve(...)` plus the `ProviderConfig` endpoint bundle
+it takes. Everything else is plumbing.
 """
 
+from mathx.config import ProviderConfig
 from mathx.engine import Result, Sample, solve
 
-__all__ = ["solve", "Result", "Sample"]
+__all__ = ["solve", "Result", "Sample", "ProviderConfig"]

@@ -15,7 +15,9 @@ from mathx import config, jobs, ledger
 from mathx.argue import argue, expand_claim
 from mathx.check import check, check_result_to_dict
 from mathx.engine import Sample, result_to_dict, solve
+from mathx.ledger import challenge_text
 from mathx.report import (
+    STATE_GLYPH,
     render_check_report,
     render_check_script,
     render_ledger,
@@ -73,12 +75,15 @@ _ENDPOINT_OPTIONS = [
 ]
 
 
-def resolve_provider(**kwargs) -> dict:
-    """config.resolve_provider, with errors surfaced as CLI errors."""
+def resolve_provider(**kwargs) -> config.ProviderConfig:
+    """config.resolve_provider, with errors surfaced as CLI errors; also
+    exports a profile's concurrency cap so engines and spawned workers self-cap."""
     try:
-        return config.resolve_provider(**kwargs)
+        p = config.resolve_provider(**kwargs)
     except ValueError as e:
         raise click.ClickException(str(e)) from e
+    config.export_concurrency(p)
+    return p
 
 # Solving-specific options (`solve`, `submit` without --check).
 _SOLVE_OPTIONS = [
@@ -216,18 +221,10 @@ def solve_cmd(
     result = asyncio.run(
         solve(
             problem,
-            model=p["model"],
-            base_url=p["base_url"],
-            api_key=p["api_key"],
+            provider=p,
             k=k,
             strategy=strategy,  # type: ignore[arg-type]
-            temperature=p["temperature"],
-            max_tokens=p["max_tokens"],
             max_k=max_k,
-            top_p=p["top_p"],
-            extra_body=p["extra_body"],
-            max_retries=p["max_retries"],
-            equiv_judge_model=p["equiv_judge_model"],
             on_sample=on_sample,
             on_escalate=on_escalate,
         )
@@ -302,18 +299,10 @@ def check_cmd(
         result = asyncio.run(
             check(
                 claim,
-                model=p["model"],
-                base_url=p["base_url"],
-                api_key=p["api_key"],
+                provider=p,
                 tir_k=tir_k,
                 grade_k=grade_k,
-                temperature=p["temperature"],
-                max_tokens=p["max_tokens"],
                 exec_timeout_s=exec_timeout,
-                meta_model=p["meta_model"],
-                top_p=p["top_p"],
-                extra_body=p["extra_body"],
-                max_retries=p["max_retries"],
             )
         )
     except ValueError as e:
@@ -395,19 +384,11 @@ def argue_cmd(
         led = asyncio.run(
             argue(
                 problem,
-                model=p["model"],
-                base_url=p["base_url"],
-                api_key=p["api_key"],
+                provider=p,
                 rounds=rounds,
                 tir_k=tir_k,
                 grade_k=grade_k,
-                temperature=p["temperature"],
-                max_tokens=p["max_tokens"],
                 exec_timeout_s=exec_timeout,
-                meta_model=p["meta_model"],
-                top_p=p["top_p"],
-                extra_body=p["extra_body"],
-                max_retries=p["max_retries"],
                 on_event=lambda msg: click.echo(msg, err=True),
             )
         )
@@ -462,32 +443,22 @@ def submit_cmd(
         temperature=temperature, max_tokens=max_tokens, top_p=top_p,
         extra_body=extra_body, meta_model=meta_model, equiv_judge_model=equiv_judge_model,
     )
-    common = {
-        "model": p["model"],
-        "base_url": p["base_url"],
-        "temperature": p["temperature"],
-        "max_tokens": p["max_tokens"],
-        "top_p": p["top_p"],
-        "extra_body": p["extra_body"],
-        "max_retries": p["max_retries"],
-    }
     if as_check:
         args = {
             "claim": problem,
             "tir_k": tir_k,
             "grade_k": grade_k,
             "exec_timeout_s": exec_timeout,
-            "meta_model": p["meta_model"],
-            **common,
+            "provider": p.to_args(),
         }
         record = jobs.submit(kind="check", args=args)
     else:
         args = {
             "problem": problem, "strategy": strategy, "k": k, "max_k": max_k,
-            "equiv_judge_model": p["equiv_judge_model"], **common,
+            "provider": p.to_args(),
         }
         record = jobs.submit(kind="solve", args=args)
-    jobs.spawn_worker(record["job_id"], api_key=p["api_key"])
+    jobs.spawn_worker(record["job_id"], api_key=p.api_key)
     click.echo(record["job_id"])
     click.echo(
         f"poll: mathx status {record['job_id']}   report when done: mathx show {record['job_id']}",
@@ -682,7 +653,7 @@ def ledger_group(ctx: click.Context) -> None:
         return
     for led in records:
         counts = ledger.state_counts(led)
-        summary = " ".join(f"{n}{_STATE_ABBREV.get(s, s[:1])}" for s, n in sorted(counts.items()))
+        summary = " ".join(f"{n}{STATE_GLYPH.get(s, s[:1])}" for s, n in sorted(counts.items()))
         problem = " ".join(str(led.get("problem", "")).split())
         if len(problem) > 40:
             problem = problem[:39] + "…"
@@ -692,18 +663,21 @@ def ledger_group(ctx: click.Context) -> None:
         )
 
 
-_STATE_ABBREV = {
-    "supported": "✓", "refuted": "✗", "unclear": "?", "conflict": "!",
-    "error": "!", "checking": "…", "unchecked": "·", "retired": "–", "missing": "?",
-}
+def _resolve_ledger_claim(
+    ledger_id: str, claim_id: str, **provider_kwargs
+) -> tuple[dict, dict, config.ProviderConfig]:
+    """Shared head of the ledger verbs: load ledger + claim, resolve provider.
 
-
-def _load_ledger_claim(ledger_id: str, claim_id: str) -> tuple[dict, dict]:
+    model/base_url are not required — attach_check/expand_claim fall back to
+    the ledger's own.
+    """
     try:
         led = ledger.read(ledger_id)
-        return led, ledger.get_claim(led, claim_id)
+        claim = ledger.get_claim(led, claim_id)
     except KeyError as e:
         raise click.ClickException(str(e)) from e
+    p = resolve_provider(require=("api_key",), **provider_kwargs)
+    return led, claim, p
 
 
 @ledger_group.command(name="recheck")
@@ -718,18 +692,14 @@ def recheck_cmd(
     meta_model: str | None, tir_k: int, grade_k: int, exec_timeout: float,
 ) -> None:
     """Re-check one claim (e.g. at higher --grade-k); badges refresh on next render."""
-    led, claim = _load_ledger_claim(ledger_id, claim_id)
-    p = resolve_provider(
-        profile=profile, model=model, base_url=base_url, api_key=api_key,
-        temperature=temperature, max_tokens=max_tokens, top_p=top_p,
-        extra_body=extra_body, meta_model=meta_model, require=("api_key",),
+    led, claim, p = _resolve_ledger_claim(
+        ledger_id, claim_id, profile=profile, model=model, base_url=base_url,
+        api_key=api_key, temperature=temperature, max_tokens=max_tokens, top_p=top_p,
+        extra_body=extra_body, meta_model=meta_model,
     )
     job_id = ledger.attach_check(
-        led, claim, api_key=p["api_key"], round_=led["rounds_used"], kind="recheck",
-        model=p["model"], base_url=p["base_url"], tir_k=tir_k, grade_k=grade_k,
-        exec_timeout_s=exec_timeout, temperature=p["temperature"],
-        max_tokens=p["max_tokens"], meta_model=p["meta_model"], top_p=p["top_p"],
-        extra_body=p["extra_body"], max_retries=p["max_retries"],
+        led, claim, provider=p, round_=led["rounds_used"], kind="recheck",
+        tir_k=tir_k, grade_k=grade_k, exec_timeout_s=exec_timeout,
     )
     click.echo(job_id)
     click.echo(f"rechecking {claim_id}; render with: mathx show {ledger_id}", err=True)
@@ -749,22 +719,15 @@ def challenge_cmd(
     exec_timeout: float,
 ) -> None:
     """Re-check one claim with a specific objection put to the checkers."""
-    led, claim = _load_ledger_claim(ledger_id, claim_id)
-    p = resolve_provider(
-        profile=profile, model=model, base_url=base_url, api_key=api_key,
-        temperature=temperature, max_tokens=max_tokens, top_p=top_p,
-        extra_body=extra_body, meta_model=meta_model, require=("api_key",),
-    )
-    text = (
-        f"{claim['text']}\n\nWhen judging this claim, specifically address the "
-        f"following objection: {objection}"
+    led, claim, p = _resolve_ledger_claim(
+        ledger_id, claim_id, profile=profile, model=model, base_url=base_url,
+        api_key=api_key, temperature=temperature, max_tokens=max_tokens, top_p=top_p,
+        extra_body=extra_body, meta_model=meta_model,
     )
     job_id = ledger.attach_check(
-        led, claim, api_key=p["api_key"], round_=led["rounds_used"], kind="challenge",
-        text_override=text, model=p["model"], base_url=p["base_url"], tir_k=tir_k,
-        grade_k=grade_k, exec_timeout_s=exec_timeout, temperature=p["temperature"],
-        max_tokens=p["max_tokens"], meta_model=p["meta_model"], top_p=p["top_p"],
-        extra_body=p["extra_body"], max_retries=p["max_retries"],
+        led, claim, provider=p, round_=led["rounds_used"], kind="challenge",
+        text_override=challenge_text(claim, objection),
+        tir_k=tir_k, grade_k=grade_k, exec_timeout_s=exec_timeout,
     )
     click.echo(job_id)
     click.echo(f"challenging {claim_id}; render with: mathx show {ledger_id}", err=True)
@@ -782,20 +745,16 @@ def expand_cmd(
     meta_model: str | None, tir_k: int, grade_k: int, exec_timeout: float,
 ) -> None:
     """Decompose one claim into sub-claims and check each of them."""
-    led, claim = _load_ledger_claim(ledger_id, claim_id)
-    p = resolve_provider(
-        profile=profile, model=model, base_url=base_url, api_key=api_key,
-        temperature=temperature, max_tokens=max_tokens, top_p=top_p,
-        extra_body=extra_body, meta_model=meta_model, require=("api_key",),
+    led, claim, p = _resolve_ledger_claim(
+        ledger_id, claim_id, profile=profile, model=model, base_url=base_url,
+        api_key=api_key, temperature=temperature, max_tokens=max_tokens, top_p=top_p,
+        extra_body=extra_body, meta_model=meta_model,
     )
     try:
         children = asyncio.run(
             expand_claim(
-                led, claim, api_key=p["api_key"], model=p["model"], base_url=p["base_url"],
-                tir_k=tir_k, grade_k=grade_k, temperature=p["temperature"],
-                max_tokens=p["max_tokens"], exec_timeout_s=exec_timeout,
-                meta_model=p["meta_model"], top_p=p["top_p"], extra_body=p["extra_body"],
-                max_retries=p["max_retries"],
+                led, claim, provider=p,
+                tir_k=tir_k, grade_k=grade_k, exec_timeout_s=exec_timeout,
             )
         )
     except RuntimeError as e:
