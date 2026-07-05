@@ -393,8 +393,9 @@ Either use such a model with `--strategy cot --k 1`, or specify higher temperatu
   code template parsing + splice-back. The calling agent already has a Python tool, so adding TIR
   here mostly matters when a specialist model that *only* talks via fenced code (e.g.
   OpenMath-Nemotron, Qwen2.5-Math) enters the rotation.
-- **The MCP server** ships: `mathx mcp-serve` (stdio), two tools (`submit_solve` /
-  `check_solve`) over the same job store as the CLI verbs. The handle/poll-vs-MCP-Tasks
+- **The MCP server** ships: `mathx mcp-serve` (stdio) exposes the full submit/poll/ledger
+  surface (`submit_solve` / `submit_check` / `submit_argue` / `poll_job` / `list_jobs`, plus
+  the ledger tools) over the same job store as the CLI verbs. The handle/poll-vs-MCP-Tasks
   reasoning and per-client wiring snippets are in [`MCP_PLAN.md`](MCP_PLAN.md).
 
 ## Privacy

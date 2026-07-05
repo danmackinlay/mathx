@@ -55,9 +55,6 @@ beyond appending a verdict reference.
 
 ## What stays out
 
-- **Background `argue` (a `kind: argue` job).** Foreground with stderr progress for now; the
-  agent home already gets async by driving `submit --check` itself.
-- **MCP tools for argue/ledger.** Stage 5, with the rest of the owed MCP surface.
 - **Math-equivalence claim matching across rounds.** Exact normalized text only; verbatim
   reuse is what the refiner is instructed to do, and equivalence-matching invites silently
   wrong verdict carry-over.
