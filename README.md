@@ -3,7 +3,7 @@
 A minimal mathematical oracle for AI agents.
 If you ask it to prove something it dispatches to the specialist sub-model, with optional multi-sampling and voting.
 
-We point any OpenAI-compatible chat endpoint at a maths problem, sample it `k` times, detect equivalence using [math-verify](https://pypi.org/project/math-verify/) (so `\frac{1}{2}` is the same as `0.5`), and return the modal answer, with confidence margin and audit train.
+We point any OpenAI-compatible chat endpoint at a maths problem, sample it `k` times, detect equivalence using [math-verify](https://pypi.org/project/math-verify/) (so `\frac{1}{2}` is the same as `0.5`), and return the modal answer, with confidence margin and audit trail.
 
 Voting is optional: `--strategy cot` is one sample
 at temperature 0.
