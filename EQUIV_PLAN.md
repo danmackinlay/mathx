@@ -1,7 +1,8 @@
-# Plan: answer equivalence — CAS-first, judge-fallback
+# Answer equivalence — CAS-first, judge-fallback (shipped)
 
-Design note for the vote's core primitive. Not yet built; the adopt-vs-build decision is
-gated on the tooling survey (decision log below).
+Design note for the vote's core primitive. Built 2026-07-03 (decision log below), as sketched
+here: CAS clustering with an opt-in labelled judge tier (`--equiv-judge-model` / profile
+`equiv_judge_model`) for the residue the CAS refuses.
 
 ## Problem
 
@@ -14,7 +15,7 @@ patch is reactive. Field-wide this is a known problem — math-verify itself exi
 rule matching was worse; OpenAI's simple-evals scores MATH with a model-based equality
 checker; xVerify and Omni-Judge are models fine-tuned for exactly this judgment.
 
-## Design (pending survey)
+## Design
 
 Pipeline per unplaced sample vs existing cluster representatives, strictly ordered:
 
