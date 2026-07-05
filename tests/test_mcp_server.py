@@ -5,7 +5,7 @@ import asyncio
 
 import pytest
 
-from mathx import jobs, ledger, mcp_server
+from mathx import jobs, ledger, mcp_server, worker
 
 TOOLS = {
     "submit_solve",
@@ -82,7 +82,7 @@ class TestTools:
         polled = mcp_server.poll_job(out["job_id"])
         assert polled["status"] == "running"
         assert polled["elapsed_ms"] >= 0
-        asyncio.run(jobs.run_job(out["job_id"]))  # stand in for the worker
+        asyncio.run(worker.run_job(out["job_id"]))  # stand in for the worker
         polled = mcp_server.poll_job(out["job_id"])
         assert polled["status"] == "complete"
         assert polled["result"]["answer"] == "2"
@@ -128,7 +128,7 @@ class TestArgueAndLedgerTools:
         record = jobs.read(out["job_id"])
         record["args"]["poll_s"] = 0.01
         jobs._write_atomic(jobs._job_path(out["job_id"]), record)
-        done = asyncio.run(jobs.run_job(out["job_id"]))
+        done = asyncio.run(worker.run_job(out["job_id"]))
         assert done["status"] == "complete"
         assert done["result"]["kind"] == "argue"
         assert done["result"]["ledger_id"] == out["ledger_id"]

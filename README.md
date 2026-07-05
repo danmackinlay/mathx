@@ -319,7 +319,8 @@ src/mathx/
   argue.py        decompose–check–refine loop (`mathx argue`) + claim expansion
   ledger.py       claim-ledger store; live claim state derived from the job store
   report.py       pure renderers over run/check/ledger JSON (`mathx show`)
-  jobs.py         file-per-job store + detached worker (`python -m mathx.jobs <id>`)
+  jobs.py         file-per-job store (stdlib-only leaf: every surface reads it)
+  worker.py       job execution by kind (`python -m mathx.worker <id>`; imports the engines)
   mcp_server.py   FastMCP tools: submit_solve/check/argue, poll_job, ledger tools
   cli.py          click group: solve, check, argue, submit, status, jobs, show, ledger, …
 integrations/openwebui/

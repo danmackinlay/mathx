@@ -94,6 +94,7 @@ def inline_workers(monkeypatch):
     """Replace the detached worker subprocess with in-process tasks, so spawned
     check jobs run against the fake endpoint inside the caller's event loop."""
     import mathx.jobs as jobs
+    import mathx.worker as worker
 
     tasks = []
 
@@ -102,7 +103,7 @@ def inline_workers(monkeypatch):
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return  # spawned outside a loop (e.g. a submit tool): test drives it manually
-        tasks.append(loop.create_task(jobs.run_job(job_id)))
+        tasks.append(loop.create_task(worker.run_job(job_id)))
 
     monkeypatch.setenv("MATHX_API_KEY", "test-key")
     monkeypatch.setattr(jobs, "spawn_worker", spawn)

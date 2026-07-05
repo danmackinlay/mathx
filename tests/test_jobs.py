@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from mathx import jobs
+from mathx import jobs, worker
 from mathx.check import CHECKER_SYSTEM, GRADER_SYSTEM
 
 
@@ -129,7 +129,7 @@ class TestRunJob:
         monkeypatch.setenv("MATHX_API_KEY", "test-key")
         fake_endpoint([r"\boxed{2}"] * 2 + [r"\boxed{3}"])
         record = submit(k=3)
-        done = asyncio.run(jobs.run_job(record["job_id"]))
+        done = asyncio.run(worker.run_job(record["job_id"]))
         assert done["status"] == "complete"
         assert done["result"]["answer"] == "2"
         assert done["result"]["margin"] == "2/3"
@@ -139,14 +139,14 @@ class TestRunJob:
         monkeypatch.delenv("MATHX_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         record = submit()
-        done = asyncio.run(jobs.run_job(record["job_id"]))
+        done = asyncio.run(worker.run_job(record["job_id"]))
         assert done["status"] == "error"
         assert "MATHX_API_KEY" in done["error"]
 
     def test_engine_exception_becomes_error_record(self, monkeypatch):
         monkeypatch.setenv("MATHX_API_KEY", "test-key")
         record = submit(strategy="not-a-strategy")
-        done = asyncio.run(jobs.run_job(record["job_id"]))
+        done = asyncio.run(worker.run_job(record["job_id"]))
         assert done["status"] == "error"
         assert "ValueError" in done["error"]
 
@@ -157,7 +157,7 @@ class TestRunJob:
             GRADER_SYSTEM: r"\boxed{TRUE}",
         })
         record = submit_check()
-        done = asyncio.run(jobs.run_job(record["job_id"]))
+        done = asyncio.run(worker.run_job(record["job_id"]))
         assert done["status"] == "complete"
         assert done["result"]["kind"] == "check"
         assert done["result"]["status"] == "supported"
@@ -169,12 +169,12 @@ class TestRunJob:
         record = submit(strategy="cot", k=1)
         del record["kind"]  # simulate a pre-Stage-3 record
         (isolated_jobs_dir / f"{record['job_id']}.json").write_text(json.dumps(record))
-        done = asyncio.run(jobs.run_job(record["job_id"]))
+        done = asyncio.run(worker.run_job(record["job_id"]))
         assert done["status"] == "complete"
         assert done["result"]["answer"] == "2"
 
     def test_worker_subprocess_entry(self, isolated_jobs_dir):
-        # the real `python -m mathx.jobs <id>` path, pointed at a dead endpoint:
+        # the real `python -m mathx.worker <id>` path, pointed at a dead endpoint:
         # the sample errors (connection refused), the job still finalizes cleanly
         record = submit(base_url="http://127.0.0.1:9/v1", strategy="cot", k=1)
         env = os.environ | {
@@ -182,7 +182,7 @@ class TestRunJob:
             "MATHX_API_KEY": "test-key",
         }
         proc = subprocess.run(
-            [sys.executable, "-m", "mathx.jobs", record["job_id"]],
+            [sys.executable, "-m", "mathx.worker", record["job_id"]],
             env=env,
             capture_output=True,
             timeout=120,

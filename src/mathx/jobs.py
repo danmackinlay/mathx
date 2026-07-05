@@ -1,8 +1,12 @@
 """File-per-job store: named, inspectable background runs.
 
+This module is the substrate everything reads, and it stays a stdlib-only leaf
+of the import graph: executing jobs lives in ``mathx.worker`` (which imports
+the engines), never here.
+
 One JSON file per job under ``$MATHX_JOBS_DIR``, else ``$XDG_CACHE_HOME/mathx/jobs``,
 else ``~/.cache/mathx/jobs``. Every surface (CLI ``status``/``jobs``/``show``, MCP
-``check_solve``) is just a reader of these files; the only writers are ``submit``
+``poll_job``) is just a reader of these files; the only writers are ``submit``
 (initial "running" record) and the worker (final "complete"/"error" record), both
 via atomic tmp-file-then-rename.
 
@@ -24,13 +28,12 @@ The API key is NEVER written to disk: the worker resolves it from its
 environment (``MATHX_API_KEY``/``OPENAI_API_KEY``) at run time; ``spawn_worker``
 can inject an explicitly-passed key into the child's environment only.
 
-The worker entry point is ``python -m mathx.jobs <job_id>`` — spawned detached
-by both ``mathx submit`` and the MCP server, so jobs survive whoever submitted
-them.
+The worker entry point is ``python -m mathx.worker <job_id>`` — spawned
+detached by both ``mathx submit`` and the MCP server, so jobs survive whoever
+submitted them.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import secrets
@@ -39,10 +42,6 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-
-from mathx.check import check_result_to_dict
-from mathx.check import check as run_check
-from mathx.engine import result_to_dict, solve
 
 
 def jobs_dir() -> Path:
@@ -152,100 +151,16 @@ def prune(*, hours: float) -> int:
     return n
 
 
-async def run_job(job_id: str) -> dict:
-    """Execute a submitted job and finalize its record. The worker body."""
-    record = read(job_id)
-    kind = record.get("kind", "solve")  # pre-Stage-3 records carry no kind
-    args = record["args"]
-    api_key = os.environ.get("MATHX_API_KEY") or os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        return fail(job_id, error="no API key in environment: set MATHX_API_KEY (or OPENAI_API_KEY)")
-    try:
-        if kind == "argue":
-            from mathx.argue import argue as run_argue  # lazy: argue imports this module
-            from mathx.ledger import state_counts
-
-            led = await run_argue(
-                args["problem"],
-                model=args["model"],
-                base_url=args["base_url"],
-                api_key=api_key,
-                rounds=args.get("rounds", 2),
-                tir_k=args.get("tir_k", 1),
-                grade_k=args.get("grade_k", 4),
-                temperature=args.get("temperature"),
-                max_tokens=args.get("max_tokens", 16000),
-                exec_timeout_s=args.get("exec_timeout_s", 60.0),
-                meta_model=args.get("meta_model"),
-                top_p=args.get("top_p"),
-                extra_body=args.get("extra_body"),
-                max_retries=args.get("max_retries"),
-                ledger_id=args.get("ledger_id"),
-                poll_s=args.get("poll_s", 2.0),
-            )
-            # the ledger is the artifact; the job result is a thin pointer
-            payload = {
-                "kind": "argue",
-                "ledger_id": led["ledger_id"],
-                "status": led["status"],
-                "rounds_used": led["rounds_used"],
-                "claims": state_counts(led),
-            }
-        elif kind == "check":
-            result = await run_check(
-                args["claim"],
-                model=args["model"],
-                base_url=args["base_url"],
-                api_key=api_key,
-                tir_k=args.get("tir_k", 1),
-                grade_k=args.get("grade_k", 8),
-                temperature=args.get("temperature"),
-                max_tokens=args.get("max_tokens", 16000),
-                exec_timeout_s=args.get("exec_timeout_s", 60.0),
-                meta_model=args.get("meta_model"),
-                top_p=args.get("top_p"),
-                extra_body=args.get("extra_body"),
-                max_retries=args.get("max_retries"),
-            )
-            payload = check_result_to_dict(result)
-        elif kind == "solve":
-            result = await solve(
-                args["problem"],
-                model=args["model"],
-                base_url=args["base_url"],
-                api_key=api_key,
-                k=args["k"],
-                strategy=args["strategy"],
-                temperature=args["temperature"],
-                max_tokens=args["max_tokens"],
-                max_k=args["max_k"],
-                top_p=args.get("top_p"),
-                extra_body=args.get("extra_body"),
-                max_retries=args.get("max_retries"),
-                equiv_judge_model=args.get("equiv_judge_model"),
-            )
-            payload = result_to_dict(result)
-        else:
-            return fail(job_id, error=f"unknown job kind: {kind!r}")
-    except Exception as e:
-        return fail(job_id, error=f"{type(e).__name__}: {e}")
-    return finalize(job_id, result=payload)
-
-
 def spawn_worker(job_id: str, *, api_key: str | None = None) -> None:
     """Run the job in a detached child that outlives this process."""
     env = os.environ.copy()
     if api_key:
         env["MATHX_API_KEY"] = api_key
     subprocess.Popen(
-        [sys.executable, "-m", "mathx.jobs", job_id],
+        [sys.executable, "-m", "mathx.worker", job_id],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,
         env=env,
     )
-
-
-if __name__ == "__main__":
-    asyncio.run(run_job(sys.argv[1]))
