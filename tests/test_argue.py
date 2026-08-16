@@ -174,8 +174,9 @@ class TestArgueExtras:
         monkeypatch.setenv("MATHX_API_KEY", "test-key")
 
         def spawn_then_die(job_id: str, **_kw) -> None:
+            # what stamp_worker leaves behind, with a pid that then "died"
             record = jobs.read(job_id)
-            record["worker_pid"] = 999999999  # stamped, then "died"
+            record.update(status="running", worker_pid=999999999)
             (jobs.jobs_dir() / f"{job_id}.json").write_text(_json.dumps(record))
 
         monkeypatch.setattr(jobs, "spawn_worker", spawn_then_die)
@@ -185,6 +186,20 @@ class TestArgueExtras:
         state, detail = ledger.claim_state(claim)
         assert state == "error"
         assert "orphan" in detail
+
+    def test_never_started_check_job_fails_after_grace(self, fake_endpoint, monkeypatch):
+        # the pre-stamp death: a worker that dies BEFORE stamp_worker leaves the
+        # record queued with no pid, so worker_alive is None forever — only the
+        # STAMP_GRACE_S timer can unstick the loop
+        import mathx.argue as argue_mod
+
+        fake_endpoint(by_system={DECOMPOSER_SYSTEM: decomp("Claim stillborn.")})
+        monkeypatch.setattr(argue_mod, "STAMP_GRACE_S", 0.02)
+        led = run_argue(rounds=0, spawn=lambda *_a, **_k: None)  # spawn is a no-op: no worker ever
+        assert led["status"] == "assembled"
+        state, detail = ledger.claim_state(led["claims"][0])
+        assert state == "error"
+        assert "never started" in detail
 
     def test_decompositions_persisted_as_audit(self, fake_endpoint, inline_workers):
         fake_endpoint(by_system={

@@ -51,6 +51,15 @@ class TestPipe:
     def test_picker_entries(self, pipe):
         assert [entry["id"] for entry in pipe.pipes()] == ["solve", "check", "argue"]
 
+    def test_valve_defaults_track_the_declared_constants(self, pipe):
+        from mathx.argue import ARGUE_GRADE_K
+        from mathx.check import DEFAULT_GRADE_K, DEFAULT_TIR_K
+
+        assert pipe.valves.CHECK_GRADE_K == DEFAULT_GRADE_K
+        assert pipe.valves.CHECK_TIR_K == DEFAULT_TIR_K
+        assert pipe.valves.ARGUE_GRADE_K == ARGUE_GRADE_K
+        assert pipe.valves.ARGUE_TIR_K == DEFAULT_TIR_K
+
     def test_solve_mode(self, pipe, provider_env, fake_endpoint):
         fake_endpoint([r"\boxed{42}"] * 3)
         pipe.valves.SOLVE_K = 3

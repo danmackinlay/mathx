@@ -38,9 +38,12 @@ SYSTEM_PROMPT = (
 )
 
 JUDGE_SYSTEM = (
+    # "think briefly, then a FINAL marker line" mirrors EQUIV_JUDGE_SYSTEM's Judgement: convention —
+    # reasoning models WILL emit preamble, so the format must survive it rather than forbid it
     "You are reviewing a candidate solution to a maths problem. "
-    "Rate, from 0.0 to 1.0, how confident you are that the boxed final answer is correct. "
-    "Reply with ONLY the number, on a single line."
+    "Rate how confident you are that the boxed final answer is correct.\n"
+    "Think briefly, then end with the FINAL line exactly "
+    "'CONFIDENCE: <number between 0.0 and 1.0>'."
 )
 
 
@@ -69,6 +72,10 @@ class Result:
     problem: str = ""
     escalations: int = 0
     judge_merges: int = 0  # cluster members merged by the equivalence judge (weaker evidence than CAS)
+    # self_verify judge passes that produced no usable confidence (errored or unparseable), so the
+    # sample's weight was default-filled with 0.5: nonzero means the confidence weighting partly
+    # degraded toward plain maj@k — visible here instead of silently uniform
+    judge_failures: int = 0
     tokens_in_total: int = 0
     tokens_out_total: int = 0
     elapsed_ms_total: int = 0
@@ -221,25 +228,45 @@ async def one_sample(
         )
 
 
-async def _judge_one(client: AsyncOpenAI, model: str, problem: str, candidate: str) -> float:
-    try:
-        resp = await client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": JUDGE_SYSTEM},
-                {
-                    "role": "user",
-                    "content": f"Problem:\n{problem}\n\nCandidate solution:\n{candidate}",
-                },
-            ],
-            temperature=0.0,
-            max_tokens=8,
-        )
-        out = (resp.choices[0].message.content or "").strip()
-        m = re.search(r"[-+]?\d*\.?\d+", out)
-        return max(0.0, min(1.0, float(m.group(0)))) if m else 0.5
-    except Exception:
-        return 0.5
+_CONFIDENCE = re.compile(r"confidence:\s*([-+]?\d*\.?\d+)", re.IGNORECASE)
+_BARE_NUMBER = re.compile(r"[-+]?\d*\.?\d+")
+
+
+async def _judge_one(
+    client: AsyncOpenAI, model: str, problem: str, candidate: str, *,
+    max_tokens: int, extra_body: dict | None,
+) -> tuple[float | None, Sample]:
+    """One self_verify judge pass: (confidence, the judge's own Sample).
+
+    Goes through ``one_sample`` so the judge gets <think>-stripping, a per-request
+    seed, extra_body passthrough, and error capture like every other call — and a
+    Sample whose token counts the caller can fold into the audit trail. The token
+    budget must be the provider's full ``max_tokens``: the original hard cap of 8
+    left reasoning models (every recommended model) mid-preamble with no number,
+    so EVERY sample silently took the 0.5 fallback and self_verify degenerated
+    into maj@k at ~2x the token cost.
+
+    Confidence is the number on the LAST 'CONFIDENCE:' line of the post-think
+    text, clamped to [0, 1]. Failing that, the last bare number — accepted only
+    if already in [0, 1]: terse judges reply with just '0.9' (and the pre-fix
+    reply format was a bare number), but a stray prose number like an equation's
+    '4' is noise, not a verdict, so out-of-range fallbacks are rejected rather
+    than clamped. Returns None confidence when the judge errored or nothing
+    parseable survived — the caller falls back VISIBLY (counted), never silently.
+    """
+    user = f"Problem:\n{problem}\n\nCandidate solution:\n{candidate}"
+    s = await one_sample(
+        client, model, user, temperature=0.0, max_tokens=max_tokens,
+        system=JUDGE_SYSTEM, extra_body=extra_body,
+    )
+    text = s.text or ""
+    hits = _CONFIDENCE.findall(text)
+    if hits:
+        return max(0.0, min(1.0, float(hits[-1]))), s
+    nums = _BARE_NUMBER.findall(text)
+    if nums and 0.0 <= float(nums[-1]) <= 1.0:
+        return float(nums[-1]), s
+    return None, s
 
 
 def _cluster(samples: list[Sample]) -> list[dict]:
@@ -413,12 +440,13 @@ async def solve(
     samples: list[Sample] = []
     planned = kk
     escalations = 0
+    judge_failures = 0
     done = 0
     cap = concurrency_cap()
     sem = asyncio.Semaphore(cap) if cap else None
 
     async def one() -> Sample:
-        nonlocal done
+        nonlocal done, judge_failures
         if sem is not None:
             await sem.acquire()
         try:
@@ -428,9 +456,22 @@ async def solve(
             )
             if strategy == "self_verify":
                 if s.text is None or s.boxed is None:
-                    s.confidence = 0.0
+                    s.confidence = 0.0  # nothing to judge — no judge call made, NOT a judge failure
                 else:
-                    s.confidence = await _judge_one(client, model, problem, s.text)
+                    conf, judged = await _judge_one(
+                        client, model, problem, s.text,
+                        max_tokens=provider.max_tokens, extra_body=provider.extra_body,
+                    )
+                    # the judge call's cost rides on the judged sample, so the Result totals
+                    # (summed over samples) stay honest about what self_verify actually spent
+                    s.tokens_in += judged.tokens_in
+                    s.tokens_out += judged.tokens_out
+                    s.elapsed_ms += judged.elapsed_ms
+                    if conf is None:
+                        judge_failures += 1  # keep the uniform weight, but COUNT the degradation
+                        s.confidence = 0.5
+                    else:
+                        s.confidence = conf
         finally:
             if sem is not None:
                 sem.release()
@@ -473,6 +514,7 @@ async def solve(
         problem=problem,
         escalations=escalations,
         judge_merges=judge_merges,
+        judge_failures=judge_failures,
         tokens_in_total=sum(s.tokens_in for s in samples),
         tokens_out_total=sum(s.tokens_out for s in samples),
         elapsed_ms_total=int((time.monotonic() - t0) * 1000),
@@ -503,6 +545,7 @@ def result_to_dict(r: Result) -> dict:
         "strategy": r.strategy,
         "escalations": r.escalations,
         "judge_merges": r.judge_merges,
+        "judge_failures": r.judge_failures,
         "model": r.model,
         "base_url": r.base_url,
         "k": r.k,

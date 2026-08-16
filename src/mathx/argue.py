@@ -5,12 +5,14 @@ every claim is checked by a Stage-3 check job fanned out through the Stage-2
 store (this module only submits and polls); refinement splices the verdict
 report and the scratchpad of refuted claims back into the next decomposition.
 The ledger file is saved after every state change, so any home can pick a run
-up mid-flight. Loop policy and record shape: LOOP_PLAN.md.
+up mid-flight. Loop policy and record shape:
+DESIGN_NOTES.md#decompose-check-refine-loop-mathx-argue.
 """
 from __future__ import annotations
 
 import asyncio
 import re
+import time
 from collections.abc import Callable
 from dataclasses import replace
 
@@ -40,6 +42,8 @@ CLAIM_LINE = re.compile(r"^\s*(?:\d+[.)]|[-*•])\s+(.+?)\s*$", re.MULTILINE)
 _HEADER = re.compile(r"^\s*(ARGUMENT|CLAIMS):.*$", re.MULTILINE)
 _PLACEHOLDER = re.compile(r"^<.*>$")
 MAX_CLAIMS = 12  # more than this means the reply leaked drafts, not a decomposition
+ARGUE_GRADE_K = 4  # deliberately cheaper than a standalone check's 8 — argue fans out over many claims
+STAMP_GRACE_S = 30.0  # spawn→stamp is subseconds when healthy; still "queued" after 30 s = never started
 
 
 def parse_decomposition(text: str | None) -> tuple[str, list[str]] | None:
@@ -147,7 +151,7 @@ async def argue(
     provider: ProviderConfig,
     rounds: int = 2,
     tir_k: int = 1,
-    grade_k: int = 4,
+    grade_k: int = ARGUE_GRADE_K,
     exec_timeout_s: float = 60.0,
     poll_s: float = 2.0,
     ledger_id: str | None = None,
@@ -220,12 +224,14 @@ async def argue(
             for claim in to_check
         }
         in_flight: set[str] = set()
+        launched_at: dict[str, float] = {}
 
         def launch_up_to_cap() -> None:
             while queued and (max_jobs is None or len(in_flight) < max_jobs):
                 job_id = queued.pop(0)
                 (spawn or jobs.spawn_worker)(job_id, api_key=provider.api_key)
                 in_flight.add(job_id)
+                launched_at[job_id] = time.monotonic()
 
         launch_up_to_cap()
         while pending:
@@ -234,11 +240,20 @@ async def argue(
                 if job_id not in in_flight:
                     continue
                 record = jobs.read(job_id)
-                if record.get("status") == "running":
+                status = record.get("status")
+                if status == "running":
                     if jobs.worker_alive(record) is False:
                         # orphan: the worker died without finalizing — fail the
                         # record and move on instead of polling a ghost forever
                         jobs.fail(job_id, error="worker died without finalizing (orphan)")
+                    else:
+                        continue
+                elif status == "queued":
+                    if time.monotonic() - launched_at[job_id] > STAMP_GRACE_S:
+                        # the worker died BEFORE stamp_worker, so there is no pid
+                        # to probe (worker_alive is None forever) — the only tell
+                        # is elapsed time; without this the loop polls forever
+                        jobs.fail(job_id, error="worker never started (died before stamping)")
                     else:
                         continue
                 state, detail = ledger.claim_state(claim)
@@ -278,7 +293,7 @@ async def expand_claim(
     *,
     provider: ProviderConfig,
     tir_k: int = 1,
-    grade_k: int = 4,
+    grade_k: int = ARGUE_GRADE_K,
     exec_timeout_s: float = 60.0,
     spawn=None,
 ) -> list[dict]:

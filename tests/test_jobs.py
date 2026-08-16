@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import socket
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -43,9 +44,11 @@ class TestStore:
     def test_jobs_dir_honours_env_override(self, isolated_jobs_dir):
         assert jobs.jobs_dir() == isolated_jobs_dir
 
-    def test_submit_writes_running_record(self, isolated_jobs_dir):
+    def test_submit_writes_queued_record(self, isolated_jobs_dir):
+        # "queued", not "running": no worker exists yet at submit time (the old
+        # submit-time "running" made deferred jobs lie); stamp_worker flips it
         record = submit(k=4, strategy="maj@k", max_k=8)
-        assert record["status"] == "running"
+        assert record["status"] == "queued"
         assert record["kind"] == "solve"
         assert record["args"]["problem"] == "1+1?"
         assert record["args"]["k"] == 4
@@ -72,11 +75,23 @@ class TestStore:
         with pytest.raises(KeyError, match="invalid job id"):
             jobs.read("../../etc/passwd")
 
-    def test_check_running_has_elapsed(self):
+    def test_check_has_elapsed_while_queued_and_running(self):
         record = submit()
+        checked = jobs.check(record["job_id"])
+        assert checked["status"] == "queued"
+        assert checked["elapsed_ms"] >= 0
+        jobs.stamp_worker(record["job_id"])
         checked = jobs.check(record["job_id"])
         assert checked["status"] == "running"
         assert checked["elapsed_ms"] >= 0
+
+    def test_stamp_worker_flips_to_running_with_pid_and_host(self):
+        record = submit()
+        stamped = jobs.stamp_worker(record["job_id"])
+        assert stamped["status"] == "running"
+        assert stamped["worker_pid"] == os.getpid()
+        assert stamped["worker_host"] == socket.gethostname()
+        assert jobs.read(record["job_id"]) == stamped  # one atomic write, persisted
 
     def test_finalize(self):
         record = submit()
@@ -106,7 +121,7 @@ class TestStore:
 
     def test_worker_liveness(self, isolated_jobs_dir):
         record = submit()
-        assert "worker_alive" not in jobs.check(record["job_id"])  # no pid stamped yet
+        assert "worker_alive" not in jobs.check(record["job_id"])  # queued, no pid stamped yet
         jobs.stamp_worker(record["job_id"])
         assert jobs.check(record["job_id"])["worker_alive"] is True  # us
         stamped = jobs.read(record["job_id"])
@@ -114,10 +129,39 @@ class TestStore:
         (isolated_jobs_dir / f"{record['job_id']}.json").write_text(json.dumps(stamped))
         assert jobs.check(record["job_id"])["worker_alive"] is False
 
+    def test_worker_liveness_unknowable_across_hosts(self, isolated_jobs_dir):
+        # a pid stamped on another host (shared/rebooted job dir) is meaningless
+        # locally — worker_alive must say None, never guess True/False
+        record = submit()
+        jobs.stamp_worker(record["job_id"])
+        doctored = jobs.read(record["job_id"])
+        doctored["worker_host"] = "some-other-host.example"
+        (isolated_jobs_dir / f"{record['job_id']}.json").write_text(json.dumps(doctored))
+        assert jobs.worker_alive(jobs.read(record["job_id"])) is None
+        assert "worker_alive" not in jobs.check(record["job_id"])
+
+    def test_worker_liveness_missing_host_treated_as_local(self, isolated_jobs_dir):
+        # records predating host stamping carry a bare pid: keep their old semantics
+        record = submit()
+        doctored = jobs.read(record["job_id"])
+        doctored.update(status="running", worker_pid=os.getpid())
+        (isolated_jobs_dir / f"{record['job_id']}.json").write_text(json.dumps(doctored))
+        assert jobs.worker_alive(jobs.read(record["job_id"])) is True
+
+    def test_old_running_record_without_pid_gets_no_liveness(self, isolated_jobs_dir):
+        # pre-hardening submit wrote "running" with no pid; check must not invent liveness
+        record = submit()
+        doctored = jobs.read(record["job_id"])
+        doctored["status"] = "running"
+        (isolated_jobs_dir / f"{record['job_id']}.json").write_text(json.dumps(doctored))
+        checked = jobs.check(record["job_id"])
+        assert "worker_alive" not in checked
+        assert checked["elapsed_ms"] >= 0
+
     def test_prune_removes_old_keeps_recent(self, isolated_jobs_dir):
         old_done = submit("old complete")
         jobs.finalize(old_done["job_id"], result={"answer": "1"})
-        old_orphan = submit("old still-running orphan")
+        old_orphan = submit("old never-finished orphan")
         recent = submit("recent")
         long_ago = (datetime.now(timezone.utc) - timedelta(hours=100)).isoformat()
         for job_id, stamp_key in [(old_done["job_id"], "finished_at"), (old_orphan["job_id"], "started_at")]:

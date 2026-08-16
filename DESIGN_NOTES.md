@@ -16,8 +16,8 @@ build deferred, and a decision log. Current-state docs live in the [README](READ
 
 `mathx mcp-serve` (stdio) shipped as ROADMAP Stage 2 and grew to the full agent-client surface
 in Stage 5: `submit_solve` / `submit_check` / `submit_argue` / `poll_job` / `list_jobs` /
-`list_ledgers` / `get_ledger` / `recheck_claim` / `challenge_claim`, all over the Stage-2 job
-store in [`src/mathx/jobs.py`](src/mathx/jobs.py). Every tool is a thin lifecycle wrapper over
+`list_ledgers` / `get_ledger` / `recheck_claim` / `challenge_claim` / `expand_claim`, all over
+the Stage-2 job store in [`src/mathx/jobs.py`](src/mathx/jobs.py). Every tool is a thin lifecycle wrapper over
 the existing engine — no maths logic lives in [`src/mathx/mcp_server.py`](src/mathx/mcp_server.py).
 
 This section keeps the two things that outlived the build — the load-bearing async decision and
@@ -168,6 +168,14 @@ Cursor.
     `submit --argue` is still not exposed (trivially possible; no CLI pull yet).
   - Open WebUI is NOT this surface's constituency anymore: it integrates via the Pipe
     (`integrations/openwebui/`), per the ROADMAP Stage 5 decision.
+- **2026-08-16 (frozen profile-first)** — Policy, after weighing the knob-parity treadmill:
+  MCP tools take task-shaped args + `profile` only; endpoint knobs (model, base_url,
+  temperature, meta_model, …) are profile-only, so the surface changes per new *verb*, never
+  per knob. The vestigial `model`/`base_url` params were dropped from the submit tools.
+  `expand_claim` added for verb parity — a **reversal** of the 2026-07-05 "expand stays
+  CLI-only": it awaits the decomposition inline (async tool), so it is the one tool that can
+  block for a full generation before returning. Accepted for now; if client timeouts bite in
+  practice, the recorded fix stands: make expand a job kind.
 
 ---
 
@@ -394,10 +402,10 @@ beyond appending a verdict reference.
 
 ---
 
-## Answer equivalence (CAS-first, judge-fallback)
+## Answer equivalence
 
 Design note for the vote's core primitive. Built 2026-07-03 (decision log below), as sketched
-here: CAS clustering with an opt-in labelled judge tier (`--equiv-judge-model` / profile
+here: CAS clustering with an opt-in labelled LLM judge tier (`--equiv-judge-model` / profile
 `equiv_judge_model`) for the residue the CAS refuses.
 
 ### Problem
@@ -473,3 +481,36 @@ Mechanics and honesty constraints:
   labelled in `show`/CLI margins. Opt-in via `--equiv-judge-model` / profile
   `equiv_judge_model`. Check's grade lane unaffected; `show`'s agreement marks stay CAS-only
   (a pure reader must not make network calls).
+
+---
+
+## Audit remediation (2026-08-16)
+
+A full-source audit (21 findings) fixed in one pass; decisions worth pinning:
+
+- **`self_verify` judge was silently inert** — `max_tokens=8` guaranteed unparseable replies
+  from reasoning models, every weight fell to the 0.5 default, and self_verify degenerated to
+  maj@k at ~2× cost. Now routed through `one_sample` (think-stripping, seed, `extra_body`)
+  with the full provider budget and a `CONFIDENCE:` final-line protocol; failures still weight
+  0.5 but are counted in `Result.judge_failures` and surfaced — degradation stays visible.
+  Judge tokens ride on the judged sample so totals stay honest.
+- **Job lifecycle tells the truth** — `submit` writes `queued`; the worker's stamp flips it to
+  `running` + pid + host in one atomic write, so `running` implies a probe-able worker.
+  Liveness is host-checked (foreign/unstamped → unknown, never a guess). `argue` fails a
+  launched job still `queued` after `STAMP_GRACE_S` (worker died before stamping) — closes the
+  second infinite-poll path the orphan work missed.
+- **One rendering path** — CLI `solve`/`check` stdout now comes from the `report.py`
+  renderers over the serialized record; the hand-rolled summaries had already drifted (no exec
+  summary, no judge gloss) and are gone. Fields added to a renderer reach every surface once.
+- **Structural dedup** — `_store.py` (stdlib leaf) owns atomic writes / ids / path guards /
+  record listing for both stores; `SLOW_FRACTION`+`is_slow` single-sourced in `executor.py`;
+  CLI provider plumbing collapsed to `**endpoint → resolve_provider` (an eleventh knob is now
+  one edit, not seven); task defaults are named constants (`DEFAULT_GRADE_K=8` standalone vs
+  `ARGUE_GRADE_K=4` per-claim is deliberate, not drift).
+- **Executor honesty upgraded** — timeout now kills the whole process tree (session +
+  `killpg`); verdict NOTE lines only bind to the adjacent VERDICT; `Executor` Protocol pins
+  the remote-backend seam. sympy declared as a direct dependency (the checker contract
+  promises it; it previously arrived only via math-verify's internals).
+- **CI exists** — GitHub Actions (uv, ruff, pytest); ruff pinned to the classic `E4/E7/E9/F`
+  set (0.16's broader defaults flagged intentional patterns; widen deliberately, not by
+  upgrade).

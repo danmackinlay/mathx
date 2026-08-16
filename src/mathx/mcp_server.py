@@ -1,15 +1,22 @@
 """MCP surface for agent clients (Claude Desktop, Cursor, …): handle/poll tools
 over the shared job and ledger stores.
 
-Every submit tool returns instantly with an id; ``poll_job`` (né ``check_solve``)
+Every submit tool returns instantly with an id; ``poll_job``
 returns instantly with the record — no client tool-call timeout ever bites, and
-any tool-capable MCP client works, no MCP-Tasks support required (MCP_PLAN.md).
+any tool-capable MCP client works, no MCP-Tasks support required
+(DESIGN_NOTES.md#mcp-server).
 No engine logic lives here; workers are the same detached subprocesses the CLI
 uses, so jobs survive an MCP-server restart.
 
 Provider config resolves exactly as the CLI does — profile > environment — via
 ``config.resolve_provider``; each submit tool takes an optional ``profile``
 name. Keys are env-only and never written to disk.
+
+POLICY — profile-first surface freeze: tools take task-shaped arguments plus
+``profile``; endpoint knobs (model, base_url, temperature, meta_model,
+equiv_judge_model, …) are deliberately profile-only. Point a profile at the
+endpoint mix you want; the MCP surface changes only when a new VERB ships,
+never per knob.
 """
 from __future__ import annotations
 
@@ -17,7 +24,9 @@ from typing import Literal
 
 from mcp.server.fastmcp import FastMCP
 
-from mathx import config, jobs, ledger
+from mathx import argue, config, jobs, ledger
+from mathx.argue import ARGUE_GRADE_K
+from mathx.check import DEFAULT_EXEC_TIMEOUT_S, DEFAULT_GRADE_K, DEFAULT_TIR_K
 
 server = FastMCP(
     "mathx",
@@ -27,8 +36,9 @@ server = FastMCP(
         "(submit_check); or build a full argument with a claim ledger "
         "(submit_argue, then get_ledger for live per-claim verdict badges). All submits "
         "return a job id instantly — poll poll_job every 20-60s until status is "
-        "'complete'. Margins and verdicts are evidence, not proof: surface close votes "
-        "and conflicts instead of asserting. recheck_claim / challenge_claim escalate "
+        "'complete' (statuses run queued → running → complete/error). Margins and "
+        "verdicts are evidence, not proof: surface close votes and conflicts instead "
+        "of asserting. recheck_claim / challenge_claim / expand_claim escalate "
         "individual ledger claims."
     ),
 )
@@ -63,13 +73,11 @@ def submit_solve(
     k: int = 16,
     max_k: int | None = None,
     profile: str | None = None,
-    model: str | None = None,
-    base_url: str | None = None,
 ) -> dict:
     """Fan a problem out to k samples and vote on the boxed answer. Returns a
     job handle immediately; poll with poll_job. max_k enables auto-escalation
     on weak votes. profile selects a mathx.toml profile (else environment)."""
-    p, err = _provider(profile, model=model, base_url=base_url)
+    p, err = _provider(profile)
     if p is None:
         return err
     record = jobs.submit(
@@ -89,18 +97,16 @@ def submit_solve(
 @server.tool()
 def submit_check(
     claim: str,
-    tir_k: int = 1,
-    grade_k: int = 8,
-    exec_timeout_s: float = 60.0,
+    tir_k: int = DEFAULT_TIR_K,
+    grade_k: int = DEFAULT_GRADE_K,
+    exec_timeout_s: float = DEFAULT_EXEC_TIMEOUT_S,
     profile: str | None = None,
-    model: str | None = None,
-    base_url: str | None = None,
 ) -> dict:
     """Check one mathematical claim: a model writes a sympy verification script
     (executed locally) and grade_k samples vote TRUE/FALSE. The result carries
     supported/refuted/conflict/unclear with the full audit trail. Returns a job
     handle immediately; poll with poll_job."""
-    p, err = _provider(profile, model=model, base_url=base_url)
+    p, err = _provider(profile)
     if p is None:
         return err
     record = jobs.submit(
@@ -121,18 +127,16 @@ def submit_check(
 def submit_argue(
     problem: str,
     rounds: int = 2,
-    tir_k: int = 1,
-    grade_k: int = 4,
-    exec_timeout_s: float = 60.0,
+    tir_k: int = DEFAULT_TIR_K,
+    grade_k: int = ARGUE_GRADE_K,
+    exec_timeout_s: float = DEFAULT_EXEC_TIMEOUT_S,
     profile: str | None = None,
-    model: str | None = None,
-    base_url: str | None = None,
 ) -> dict:
     """Decompose–check–refine: build an argument whose every claim gets a
     verdict badge. Returns a job handle AND a ledger_id immediately; the ledger
     file updates live as claims are checked — watch it with get_ledger while
     the job runs."""
-    p, err = _provider(profile, model=model, base_url=base_url)
+    p, err = _provider(profile)
     if p is None:
         return err
     led = ledger.create(problem, model=p.model, base_url=p.base_url, rounds_max=rounds)
@@ -154,8 +158,9 @@ def submit_argue(
 
 @server.tool()
 def poll_job(job_id: str) -> dict:
-    """Poll a submitted job. status 'running' comes with elapsed_ms; 'complete'
-    with the result (full audit trail); 'error' with the error."""
+    """Poll a submitted job. status is 'queued' (worker not yet started) or
+    'running', each with elapsed_ms; 'complete' with the result (full audit
+    trail); 'error' with the error."""
     try:
         return jobs.check(job_id)
     except KeyError:
@@ -257,7 +262,7 @@ def _attach(ledger_id: str, claim_id: str, *, kind: str, objection: str | None,
 
 @server.tool()
 def recheck_claim(
-    ledger_id: str, claim_id: str, tir_k: int = 1, grade_k: int = 8,
+    ledger_id: str, claim_id: str, tir_k: int = DEFAULT_TIR_K, grade_k: int = DEFAULT_GRADE_K,
     profile: str | None = None,
 ) -> dict:
     """Re-check one ledger claim (e.g. at higher grade_k). Returns a job handle;
@@ -268,13 +273,43 @@ def recheck_claim(
 
 @server.tool()
 def challenge_claim(
-    ledger_id: str, claim_id: str, objection: str, tir_k: int = 1, grade_k: int = 8,
-    profile: str | None = None,
+    ledger_id: str, claim_id: str, objection: str, tir_k: int = DEFAULT_TIR_K,
+    grade_k: int = DEFAULT_GRADE_K, profile: str | None = None,
 ) -> dict:
     """Re-check one ledger claim with a specific objection put to the checkers
     (e.g. an edge case the claim glosses over)."""
     return _attach(ledger_id, claim_id, kind="challenge", objection=objection,
                    tir_k=tir_k, grade_k=grade_k, profile=profile)
+
+
+@server.tool()
+async def expand_claim(
+    ledger_id: str, claim_id: str, tir_k: int = DEFAULT_TIR_K, grade_k: int = ARGUE_GRADE_K,
+    profile: str | None = None,
+) -> dict:
+    """Decompose one ledger claim into 2–5 sub-claims that together imply it;
+    each sub-claim gets its own background check job, and badges appear in
+    get_ledger as those jobs complete (mirrors `mathx ledger expand`)."""
+    p, err = _provider(profile, require=("api_key",))
+    if p is None:
+        return err
+    try:
+        led = ledger.read(ledger_id)
+        claim = ledger.get_claim(led, claim_id)
+    except KeyError as e:
+        return {"status": "error", "error": str(e)}
+    try:
+        children = await argue.expand_claim(
+            led, claim, provider=p, tir_k=tir_k, grade_k=grade_k,
+        )
+    except RuntimeError as e:  # decomposition failed — same error-dict surface as _attach
+        return {"status": "error", "error": str(e)}
+    return {
+        "ledger_id": ledger_id,
+        "claim_id": claim_id,
+        "children": [{"id": c["id"], "text": c["text"]} for c in children],
+        "status": "checking",
+    }
 
 
 def serve() -> None:

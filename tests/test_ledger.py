@@ -59,7 +59,12 @@ class TestClaimState:
             spawn=lambda jid, **kw: spawned.append(jid)
         )
         assert spawned == [job_id]
+        # queued (spawn hasn't stamped a worker) must read as checking, not fall
+        # through to result-parsing and read as an error
+        assert jobs.read(job_id)["status"] == "queued"
         assert ledger.claim_state(claim) == ("checking", "")
+        jobs.stamp_worker(job_id)
+        assert ledger.claim_state(claim) == ("checking", "")  # running: still checking
 
         jobs.finalize(job_id, result={"kind": "check", "status": "supported", "summary": "s — g"})
         assert ledger.claim_state(claim) == ("supported", "s — g")

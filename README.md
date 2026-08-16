@@ -43,8 +43,10 @@ the right command if either is missing.
 **Other agents.** Agent clients (Claude Desktop, Cursor, VS Code Copilot) get the bundled
 MCP server: `mathx mcp-serve` (stdio) — handle/poll tools (`submit_solve` / `submit_check` /
 `submit_argue` / `poll_job` / `list_jobs`, plus ledger tools `get_ledger` / `list_ledgers` /
-`recheck_claim` / `challenge_claim`), all instant-return so no client tool-call timeout ever
-bites; per-client wiring snippets are in [`DESIGN_NOTES.md`](DESIGN_NOTES.md#mcp-server).
+`recheck_claim` / `challenge_claim` / `expand_claim`), all instant-return so no client
+tool-call timeout ever bites, and deliberately profile-first — endpoint knobs come from
+`mathx.toml` profiles, not per-call parameters; per-client wiring snippets are in
+[`DESIGN_NOTES.md`](DESIGN_NOTES.md#mcp-server).
 **Open WebUI** gets the Pipe instead — the loop runs in mathx code and streams ledger
 progress into chat, independent of the served model's tool-calling ability:
 [`integrations/openwebui/`](integrations/openwebui/).
@@ -74,6 +76,7 @@ concurrency = 3                # the server's real parallelism
 base_url = "https://openrouter.ai/api/v1"
 model = "deepseek/deepseek-v4-flash"
 api_key_env = "OPENROUTER_API_KEY"   # NAMES the env var; keys never live in this file
+equiv_judge_model = "deepseek/deepseek-v4-flash"   # optional third role: equivalence judge
 extra_body = { reasoning = { effort = "high" } }   # provider-dialect passthrough, verbatim
 ```
 
@@ -98,8 +101,8 @@ it can see.
 
 Set them however you set env vars, or pass
 `--model` / `--base-url` / `--api-key` explicitly. mathx just reads the environment; it ships no
-`.env` loader of its own. `--top-p` and `--extra-body '<json>'` exist as flags too;
-`max_retries` is profile-only.
+`.env` loader of its own. `--top-p`, `--extra-body '<json>'` and `--equiv-judge-model` exist as
+flags too; `max_retries` is profile-only.
 
 The repo does include a one-line `.envrc` (`dotenv_if_exists`): if you hack on mathx from a clone
 with [direnv](https://direnv.net), it auto-loads a git-ignored `.env` so a provider key stays handy
@@ -151,11 +154,19 @@ mathx solve "What is 7^999 mod 1000?" \
 `--out` writes the structured JSON the calling agent parses. When stderr is a TTY, per-sample
 progress streams there as the fan-out runs (`--progress/--no-progress` to force it either way).
 
-Two options worth knowing:
+Three options worth knowing:
 
 - `--max-k 64` — auto-escalation. If the winning cluster holds no strict majority of the vote
   (a 6/5/5-style split), mathx doubles the sample count and re-votes over everything drawn so
   far, up to 64 samples total. The JSON records how many escalations fired.
+- `--equiv-judge-model <model>` — the equivalence judge fallback, off by default (profile key:
+  `equiv_judge_model`). Answer clustering is CAS-first: math-verify decides, and two spellings
+  of one answer it can't reconcile split the vote. Pass this and an LLM judge gets the
+  clusters math-verify refused to merge — bounded to the top 3 clusters as merge targets, both
+  presentation orders must independently say yes (order-bias hygiene), and any unparseable
+  reply counts as *not* equivalent, because a false merge poisons a cluster while a missed one
+  only splits a vote. Judge merges are never silent: they're counted in `judge_merges`,
+  labelled per sample as `merge_basis: "judge"`, and rendered `≈` (not `✓`) by `mathx show`.
 - `mathx show <run.json>` — render a past run's audit record: vote histogram, per-sample
   answers with agree/disagree marks (by the same math-verify equivalence the vote used), and a
   disagreement summary. `mathx show <run.json> --sample 3` prints sample 3's full reasoning.
@@ -169,11 +180,23 @@ mathx jobs               # all runs, newest first; --prune HOURS deletes old rec
 mathx show <job_id>      # render a finished job (same reader as for --out files)
 ```
 
-`submit` writes a `running` record to the job store (see `MATHX_JOBS_DIR`) and detaches a
-worker that outlives the CLI call; the record flips to `complete`/`error` when the fan-out
-lands. Runs get identity and history: every surface — `status`, `jobs`, `show`, the MCP
-server's `poll_job` — is just a reader of the same files. The API key is never written to
-disk; workers read it from the environment.
+`submit` writes a `queued` record to the job store (see `MATHX_JOBS_DIR`) and detaches a
+worker that outlives the CLI call; the worker stamps the record `running` (with its pid and
+host) when it starts, and the record flips to `complete`/`error` when the fan-out lands.
+Runs get identity and history: every surface — `status`, `jobs`, `show`, the MCP server's
+`poll_job` — is just a reader of the same files, reporting `queued`/`running`/`complete`/
+`error`. The API key is never written to disk; workers read it from the environment.
+
+A detached worker can also die without finalizing its record — killed, OOMed, host rebooted —
+which would leave the job `running` forever. So every poll checks liveness against the stamped
+pid: `status` and `poll_job` add `worker_alive`, and `mathx status` prints
+`worker is DEAD — this job is orphaned and will never finish` instead of a spinner you'd watch
+indefinitely. Liveness is host-checked: a pid is only probe-able on the host that stamped it,
+so a record from another host (or one not yet stamped) reads `null`. `mathx argue` uses the
+same signal to fail an orphaned claim job and keep its loop moving, and also fails a job whose
+worker never started — still `queued` 30 s after the spawn (spawn→stamp is subseconds when
+healthy). `mathx jobs --prune HOURS` clears old records — by finish time, or by start time for
+the never-finished.
 
 ## Checking claims
 
@@ -200,6 +223,14 @@ The overall status is `supported` / `refuted` / `conflict` / `unclear` (exit cod
 lands in the JSON record. `mathx show <run>` renders it; `--script N` prints a checker
 script and its output, `--sample N` a grader's reasoning. `MATHX_EXECUTOR` picks where
 checker scripts run (only `local` today; remote sandbox backends are planned).
+
+Checker runtime is part of that trail, because "the script didn't finish" and "the claim didn't
+check out" are different failures that both arrive as a non-`PASS`. Every script run records
+`exec_elapsed_ms` and `timed_out`, and the record carries an `exec` summary (script count, total
+and slowest ms, how many timed out, how many ran slow). `mathx show` prints an `execution:` line
+and flags `⚠` on any script that timed out or ate ≥ 80% of its budget — a near-miss is usually a
+verdict to distrust rather than believe, so raise `--exec-timeout` or narrow the claim and
+re-run.
 
 ## Building an argument
 
@@ -252,12 +283,15 @@ The shipped `SKILL.md` teaches the agent when to dispatch and how to interpret t
 
 ```json
 {
+  "kind": "solve",
   "problem": "What is 7^999 mod 1000?",
   "answer": "143",
   "margin": "14/16",
   "votes": {"143": 14.0, "43": 2.0},
   "strategy": "maj@k",
   "escalations": 0,
+  "judge_merges": 0,
+  "judge_failures": 0,
   "model": "deepseek/deepseek-v4-pro",
   "base_url": "https://openrouter.ai/api/v1",
   "k": 16,
@@ -269,6 +303,7 @@ The shipped `SKILL.md` teaches the agent when to dispatch and how to interpret t
       "boxed": "143",
       "confidence": null,
       "error": null,
+      "merge_basis": null,
       "tokens_in": 256,
       "tokens_out": 1574,
       "elapsed_ms": 4218,
@@ -287,6 +322,15 @@ The shipped `SKILL.md` teaches the agent when to dispatch and how to interpret t
   for `cot`/`maj@k`; sum of judge confidences for `self_verify`).
 - **`escalations`** — how many times a weak margin triggered a doubling of `k` (only nonzero when
   `--max-k` is passed); `k` is the total number of samples actually drawn.
+- **`judge_merges`** — how many samples were folded into a larger cluster by the equivalence
+  judge rather than by the CAS (only nonzero when `--equiv-judge-model` is passed). A nonzero
+  count means part of the margin rests on LLM-judged equivalence, which is weaker evidence than
+  a CAS merge; both the summary line and `mathx show` say so.
+- **`samples[].merge_basis`** — `"judge"` on exactly those samples, else `null`. This is what
+  lets a reader recompute the margin without the judge's contribution.
+- **`judge_failures`** — how many `self_verify` judge replies couldn't be parsed and fell back
+  to weight 0.5. Nonzero means the run partially degraded toward `maj@k`; the summary line and
+  `mathx show` flag it.
 - **`samples[].confidence`** — only populated by `self_verify` (the judge's 0–1 score).
 - **`samples[].text`** — the full per-sample reasoning, kept as audit trail. Can be large. Maths
   in it uses `$…$` / `$$…$$` (mathx pins the model to these — `\(…\)` / `\[…\]` render as raw
@@ -299,6 +343,10 @@ The shipped `SKILL.md` teaches the agent when to dispatch and how to interpret t
 | `cot` | One sample at `T=0`. | Quick sanity check; no voting. |
 | `maj@k` (default) | `k` samples at `T=0.7`, modal equivalence-class winner. | Default; improves accuracy over a single shot. |
 | `self_verify` | `maj@k` plus a per-sample judge pass scoring 0–1; votes are weighted by judge confidence. | When the modal answer is plausibly wrong. Slower; ~2× tokens. |
+
+A `self_verify` judge reply that can't be parsed falls back to weight 0.5 and is counted in
+`judge_failures` — a nonzero count means the run partially degraded toward `maj@k`, and both
+the summary line and `mathx show` say so.
 
 `tir` (tool-integrated reasoning) is deferred — see *Extending*.
 

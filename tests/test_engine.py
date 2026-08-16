@@ -164,6 +164,7 @@ class TestSolve:
         assert len(empty) == 1
 
     def test_self_verify_confidence_weighting(self, fake_endpoint):
+        # bare-number judge replies exercise the fallback parse (terse judges skip the marker line)
         fake_endpoint(
             [r"\boxed{41}", r"\boxed{41}", r"\boxed{42}"],
             judge=lambda candidate: "0.9" if "42" in candidate else "0.1",
@@ -172,6 +173,62 @@ class TestSolve:
         assert r.answer == "42"
         assert r.votes == {"42": 0.9, "41": 0.2}
         assert sorted(s.confidence for s in r.samples) == [0.1, 0.1, 0.9]
+        assert r.judge_failures == 0
+
+    def test_self_verify_judge_reasons_then_scores(self, fake_endpoint):
+        from mathx.engine import JUDGE_SYSTEM
+
+        # a reasoning judge: think-preamble, prose (with a decoy number), then the marker line —
+        # the LAST CONFIDENCE line wins and the preamble is think-stripped before parsing
+        ep = fake_endpoint(
+            [r"\boxed{42}"],
+            judge=lambda _u: "<think>CONFIDENCE: 0.2? no — recheck.</think>\n"
+                             "The algebra holds in all 3 steps.\nCONFIDENCE: 0.9",
+        )
+        r = _solve(k=1, strategy="self_verify")
+        assert r.samples[0].confidence == 0.9
+        assert r.judge_failures == 0
+        # judge cost rides on the judged sample: totals cover solver + judge calls
+        assert r.tokens_in_total == 2 * 10
+        assert r.tokens_out_total == 2 * 20
+        (judge_req,) = [q for q in ep.requests if q["messages"][0]["content"] == JUDGE_SYSTEM]
+        assert judge_req["temperature"] == 0.0
+        # regression: an 8-token judge budget starved reasoning models mid-preamble, so every
+        # sample silently took the 0.5 fallback — the judge now gets the provider's full budget
+        assert judge_req["max_tokens"] == provider().max_tokens
+        assert "seed" in judge_req  # routed through one_sample, not a bespoke API call
+
+    def test_self_verify_judge_gets_extra_body(self, fake_endpoint):
+        from mathx.engine import JUDGE_SYSTEM
+
+        ep = fake_endpoint([r"\boxed{42}"], judge=lambda _u: "CONFIDENCE: 1.0")
+        p = provider(extra_body={"reasoning": {"effort": "high"}})
+        asyncio.run(solve("1+1?", provider=p, k=1, strategy="self_verify"))
+        (judge_req,) = [q for q in ep.requests if q["messages"][0]["content"] == JUDGE_SYSTEM]
+        assert judge_req["reasoning"] == {"effort": "high"}  # provider dialects can be mandatory
+
+    def test_self_verify_judge_failure_is_counted(self, fake_endpoint):
+        # no CONFIDENCE line, no usable number (247 is out of [0,1], so it is prose noise,
+        # not a verdict): weight falls back to uniform 0.5 but the degradation is COUNTED
+        fake_endpoint(
+            [r"\boxed{42}", r"\boxed{42}"],
+            judge=lambda _u: "Well, by equation 247 it is hard to say.",
+        )
+        r = _solve(k=2, strategy="self_verify")
+        assert [s.confidence for s in r.samples] == [0.5, 0.5]
+        assert r.judge_failures == 2
+        assert result_to_dict(r)["judge_failures"] == 2
+
+    def test_self_verify_unjudgeable_sample_is_not_a_judge_failure(self, fake_endpoint):
+        from mathx.engine import JUDGE_SYSTEM
+
+        # an unboxed sample gets confidence 0.0 without any judge call: that's the sample's
+        # failure, not the judge's — judge_failures stays 0 and only one judge request goes out
+        ep = fake_endpoint([r"\boxed{42}", "no box"], judge=lambda _u: "CONFIDENCE: 0.8")
+        r = _solve(k=2, strategy="self_verify")
+        assert sorted(s.confidence for s in r.samples) == [0.0, 0.8]
+        assert r.judge_failures == 0
+        assert sum(1 for q in ep.requests if q["messages"][0]["content"] == JUDGE_SYSTEM) == 1
 
     def test_on_sample_progress(self, fake_endpoint):
         fake_endpoint([r"\boxed{42}"] * 3)
@@ -234,8 +291,8 @@ class TestSolve:
 
 
 class TestEquivJudge:
-    """The judge-fallback merge lane (EQUIV_PLAN.md): opt-in, both-orders,
-    conservative, counted."""
+    """The judge-fallback merge lane (DESIGN_NOTES.md#answer-equivalence): opt-in,
+    both-orders, conservative, counted."""
 
     SIGMA = r"\boxed{\sigma_1 + \sigma_2}"
     ESS = r"\boxed{s_1 + s_2}"  # same intent, CAS refuses (different symbols)
@@ -345,6 +402,7 @@ class TestResultToDict:
         assert d["problem"] == "p"
         assert d["answer"] == "42"
         assert d["escalations"] == 1
+        assert d["judge_failures"] == 0  # serialized even when clean, so its absence never lies
         assert d["samples"] == [
             {
                 "boxed": "42",

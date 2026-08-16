@@ -15,8 +15,14 @@ import os
 import sys
 
 from mathx import jobs
-from mathx.argue import argue
-from mathx.check import check, check_result_to_dict
+from mathx.argue import ARGUE_GRADE_K, argue
+from mathx.check import (
+    DEFAULT_EXEC_TIMEOUT_S,
+    DEFAULT_GRADE_K,
+    DEFAULT_TIR_K,
+    check,
+    check_result_to_dict,
+)
 from mathx.config import ProviderConfig
 from mathx.engine import result_to_dict, solve
 from mathx.ledger import state_counts
@@ -37,9 +43,9 @@ async def run_job(job_id: str) -> dict:
                 args["problem"],
                 provider=provider,
                 rounds=args.get("rounds", 2),
-                tir_k=args.get("tir_k", 1),
-                grade_k=args.get("grade_k", 4),
-                exec_timeout_s=args.get("exec_timeout_s", 60.0),
+                tir_k=args.get("tir_k", DEFAULT_TIR_K),
+                grade_k=args.get("grade_k", ARGUE_GRADE_K),
+                exec_timeout_s=args.get("exec_timeout_s", DEFAULT_EXEC_TIMEOUT_S),
                 ledger_id=args.get("ledger_id"),
                 poll_s=args.get("poll_s", 2.0),
             )
@@ -55,18 +61,18 @@ async def run_job(job_id: str) -> dict:
             result = await check(
                 args["claim"],
                 provider=provider,
-                tir_k=args.get("tir_k", 1),
-                grade_k=args.get("grade_k", 8),
-                exec_timeout_s=args.get("exec_timeout_s", 60.0),
+                tir_k=args.get("tir_k", DEFAULT_TIR_K),
+                grade_k=args.get("grade_k", DEFAULT_GRADE_K),
+                exec_timeout_s=args.get("exec_timeout_s", DEFAULT_EXEC_TIMEOUT_S),
             )
             payload = check_result_to_dict(result)
         elif kind == "solve":
             result = await solve(
                 args["problem"],
                 provider=provider,
-                k=args["k"],
-                strategy=args["strategy"],
-                max_k=args["max_k"],
+                k=args.get("k", 16),
+                strategy=args.get("strategy", "maj@k"),
+                max_k=args.get("max_k"),
             )
             payload = result_to_dict(result)
         else:

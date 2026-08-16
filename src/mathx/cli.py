@@ -12,8 +12,15 @@ from pathlib import Path
 import click
 
 from mathx import config, jobs, ledger
-from mathx.argue import argue, expand_claim
-from mathx.check import check, check_result_to_dict, is_slow
+from mathx.argue import ARGUE_GRADE_K, argue, expand_claim
+from mathx.check import (
+    DEFAULT_EXEC_TIMEOUT_S,
+    DEFAULT_GRADE_K,
+    DEFAULT_TIR_K,
+    check,
+    check_result_to_dict,
+    is_slow,
+)
 from mathx.engine import Sample, result_to_dict, solve
 from mathx.ledger import challenge_text
 from mathx.report import (
@@ -122,21 +129,21 @@ _CHECK_OPTIONS = [
     click.option(
         "--tir-k",
         type=int,
-        default=1,
+        default=DEFAULT_TIR_K,
         show_default=True,
         help="checker scripts to generate and execute (0 switches the tir lane off)",
     ),
     click.option(
         "--grade-k",
         type=int,
-        default=8,
+        default=DEFAULT_GRADE_K,
         show_default=True,
         help="TRUE/FALSE grader samples to vote (0 switches the grade lane off)",
     ),
     click.option(
         "--exec-timeout",
         type=float,
-        default=60.0,
+        default=DEFAULT_EXEC_TIMEOUT_S,
         show_default=True,
         help="seconds each checker script may run",
     ),
@@ -181,25 +188,15 @@ def solve_cmd(
     problem: str,
     strategy: str,
     k: int,
-    profile: str | None,
-    model: str | None,
-    base_url: str | None,
-    api_key: str | None,
-    temperature: float | None,
-    max_tokens: int | None,
-    top_p: float | None,
-    extra_body: str | None,
     max_k: int | None,
-    equiv_judge_model: str | None,
     progress: bool | None,
     out: Path | None,
+    **endpoint,
 ) -> None:
     """Fan out k samples and vote on the answer."""
-    p = resolve_provider(
-        profile=profile, model=model, base_url=base_url, api_key=api_key,
-        temperature=temperature, max_tokens=max_tokens, top_p=top_p, extra_body=extra_body,
-        equiv_judge_model=equiv_judge_model,
-    )
+    # every remaining click param is an exact resolve_provider kwarg (see
+    # _ENDPOINT_OPTIONS), so the endpoint bundle passes through untyped
+    p = resolve_provider(**endpoint)
     on_sample = on_escalate = None
     show_progress = progress if progress is not None else sys.stderr.isatty()
     if show_progress:
@@ -230,28 +227,12 @@ def solve_cmd(
         )
     )
 
+    run = result_to_dict(result)
     if out is not None:
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(result_to_dict(result), indent=2))
+        out.write_text(json.dumps(run, indent=2))
 
-    click.echo(f"answer: {result.answer}")
-    meta = (
-        f"margin: {result.margin}   strategy: {result.strategy}   "
-        f"model: {result.model}   k: {result.k}"
-    )
-    if result.escalations:
-        meta += f"   escalations: {result.escalations}"
-    if result.judge_merges:
-        meta += f"   judge merges: {result.judge_merges}"
-    click.echo(meta)
-    click.echo(
-        f"tokens: in={result.tokens_in_total} out={result.tokens_out_total}   "
-        f"elapsed: {result.elapsed_ms_total} ms"
-    )
-    if len(result.votes) > 1:
-        click.echo("vote split (weight, answer):")
-        for rep, w in result.votes.items():
-            click.echo(f"  {w:>6.2f}  {rep}")
+    click.echo(render_report(run))
     if out is not None:
         click.echo(f"json -> {out}", err=True)
     if result.answer is None:
@@ -263,6 +244,11 @@ def solve_cmd(
 @endpoint_options
 @check_options
 @click.option(
+    "--progress/--no-progress",
+    default=None,
+    help="stream per-script progress to stderr [default: on when stderr is a TTY]",
+)
+@click.option(
     "--out",
     type=click.Path(dir_okay=False, path_type=Path),
     default=None,
@@ -270,19 +256,12 @@ def solve_cmd(
 )
 def check_cmd(
     claim: str,
-    profile: str | None,
-    model: str | None,
-    base_url: str | None,
-    api_key: str | None,
-    temperature: float | None,
-    max_tokens: int | None,
-    top_p: float | None,
-    extra_body: str | None,
-    meta_model: str | None,
     tir_k: int,
     grade_k: int,
     exec_timeout: float,
+    progress: bool | None,
     out: Path | None,
+    **endpoint,
 ) -> None:
     """Check a claim: verdict + evidence, never proof.
 
@@ -290,13 +269,10 @@ def check_cmd(
     it in a local subprocess) and grade (a TRUE/FALSE vote of k samples).
     Exit code: 0 supported, 1 refuted, 2 conflict or unclear.
     """
-    p = resolve_provider(
-        profile=profile, model=model, base_url=base_url, api_key=api_key,
-        temperature=temperature, max_tokens=max_tokens, top_p=top_p,
-        extra_body=extra_body, meta_model=meta_model,
-    )
+    p = resolve_provider(**endpoint)
     on_script = None
-    if sys.stderr.isatty():
+    show_progress = progress if progress is not None else sys.stderr.isatty()
+    if show_progress:
 
         def on_script(run, done: int, planned: int) -> None:
             if run.timed_out:
@@ -325,22 +301,12 @@ def check_cmd(
     except ValueError as e:
         raise click.ClickException(str(e)) from e
 
+    run = check_result_to_dict(result)
     if out is not None:
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(check_result_to_dict(result), indent=2))
+        out.write_text(json.dumps(run, indent=2))
 
-    click.echo(f"claim: {claim}")
-    click.echo(f"status: {result.summary}")
-    for i, run in enumerate(result.tir_runs):
-        note = f" — {run.note}" if run.note else ""
-        timing = "timed out" if run.timed_out else f"{run.exec_elapsed_ms} ms"
-        click.echo(f"tir[{i}]: {run.verdict}   ({timing}){note}")
-    if result.grade_verdict is not None:
-        click.echo(f"grade: {result.grade_verdict} {result.grade_margin}")
-    click.echo(
-        f"tokens: in={result.tokens_in_total} out={result.tokens_out_total}   "
-        f"elapsed: {result.elapsed_ms_total} ms"
-    )
+    click.echo(render_check_report(run))
     if out is not None:
         click.echo(f"json -> {out}", err=True)
     if result.status == "refuted":
@@ -359,11 +325,11 @@ def check_cmd(
     show_default=True,
     help="max refine cycles after the initial decomposition",
 )
-@click.option("--tir-k", type=int, default=1, show_default=True,
+@click.option("--tir-k", type=int, default=DEFAULT_TIR_K, show_default=True,
               help="checker scripts per claim (0 = lane off)")
-@click.option("--grade-k", type=int, default=4, show_default=True,
+@click.option("--grade-k", type=int, default=ARGUE_GRADE_K, show_default=True,
               help="TRUE/FALSE graders per claim (0 = lane off)")
-@click.option("--exec-timeout", type=float, default=60.0, show_default=True,
+@click.option("--exec-timeout", type=float, default=DEFAULT_EXEC_TIMEOUT_S, show_default=True,
               help="seconds each checker script may run")
 @click.option("--meta-model", default=None,
               help="model for decomposition + checker scripts (the meta-tasks); "
@@ -371,19 +337,11 @@ def check_cmd(
               "profile's meta_model at a generalist.")
 def argue_cmd(
     problem: str,
-    profile: str | None,
-    model: str | None,
-    base_url: str | None,
-    api_key: str | None,
-    temperature: float | None,
-    max_tokens: int | None,
-    top_p: float | None,
-    extra_body: str | None,
     rounds: int,
     tir_k: int,
     grade_k: int,
     exec_timeout: float,
-    meta_model: str | None,
+    **endpoint,
 ) -> None:
     """Decompose–check–refine: build an argument with a checked claim ledger.
 
@@ -392,11 +350,7 @@ def argue_cmd(
     --rounds times. Prints the ledger id first, then the assembled ledger.
     Exit code: 0 if every claim ends supported, 2 otherwise.
     """
-    p = resolve_provider(
-        profile=profile, model=model, base_url=base_url, api_key=api_key,
-        temperature=temperature, max_tokens=max_tokens, top_p=top_p,
-        extra_body=extra_body, meta_model=meta_model,
-    )
+    p = resolve_provider(**endpoint)
     try:
         led = asyncio.run(
             argue(
@@ -433,21 +387,12 @@ def submit_cmd(
     problem: str,
     strategy: str,
     k: int,
-    profile: str | None,
-    model: str | None,
-    base_url: str | None,
-    api_key: str | None,
-    temperature: float | None,
-    max_tokens: int | None,
-    top_p: float | None,
-    extra_body: str | None,
     max_k: int | None,
-    equiv_judge_model: str | None,
-    meta_model: str | None,
     tir_k: int,
     grade_k: int,
     exec_timeout: float,
     as_check: bool,
+    **endpoint,
 ) -> None:
     """Dispatch a solve (or, with --check, a claim check) in the background.
 
@@ -455,11 +400,7 @@ def submit_cmd(
     that outlives this command. Poll with `mathx status <job_id>`; when
     complete, `mathx show <job_id>` renders it.
     """
-    p = resolve_provider(
-        profile=profile, model=model, base_url=base_url, api_key=api_key,
-        temperature=temperature, max_tokens=max_tokens, top_p=top_p,
-        extra_body=extra_body, meta_model=meta_model, equiv_judge_model=equiv_judge_model,
-    )
+    p = resolve_provider(**endpoint)
     if as_check:
         args = {
             "claim": problem,
@@ -487,7 +428,7 @@ def submit_cmd(
 @click.argument("job_id")
 @click.option("--json", "as_json", is_flag=True, help="print the raw job record")
 def status_cmd(job_id: str, as_json: bool) -> None:
-    """Check a background job. Exit code: 0 complete, 2 still running, 3 job errored."""
+    """Check a background job. Exit code: 0 complete, 2 still queued/running, 3 job errored."""
     try:
         record = jobs.check(job_id)
     except KeyError as e:
@@ -497,11 +438,12 @@ def status_cmd(job_id: str, as_json: bool) -> None:
     status = record.get("status")
     args = record.get("args", {})
     subject = args.get("problem") or args.get("claim") or ""
-    if status == "running":
+    if status in ("queued", "running"):
         if not as_json:
-            click.echo(f"job {job_id}: running   elapsed: {record.get('elapsed_ms', 0) / 1000:.0f} s")
+            click.echo(f"job {job_id}: {status}   elapsed: {record.get('elapsed_ms', 0) / 1000:.0f} s")
             click.echo(f"{record.get('kind', 'solve')}: {subject}")
-            if record.get("worker_alive") is False:
+            # a queued record has no pid yet, so a worker-DEAD warning can't apply
+            if status == "running" and record.get("worker_alive") is False:
                 click.echo(
                     "warning: worker is DEAD — this job is orphaned and will never "
                     "finish; resubmit it (`mathx jobs --prune` cleans old records)",
@@ -611,10 +553,10 @@ def show_cmd(run: str, sample_index: int | None, script_index: int | None) -> No
                 record = ledger.read(run)
             except KeyError:
                 raise click.ClickException(f"no such file, job id, or ledger id: {run}") from None
-        if record.get("status") == "running":
+        if record.get("status") in ("queued", "running"):
             raise click.ClickException(
-                f"job {run} is still running "
-                f"({record.get('elapsed_ms', 0) / 1000:.0f} s elapsed) — poll with `mathx status {run}`"
+                f"job {run} is not finished ({record['status']}, "
+                f"{record.get('elapsed_ms', 0) / 1000:.0f} s elapsed) — poll with `mathx status {run}`"
             )
         if record.get("status") == "error":
             raise click.ClickException(f"job {run} errored: {record.get('error')}")
@@ -703,17 +645,10 @@ def _resolve_ledger_claim(
 @endpoint_options
 @check_options
 def recheck_cmd(
-    ledger_id: str, claim_id: str, profile: str | None, model: str | None,
-    base_url: str | None, api_key: str | None, temperature: float | None,
-    max_tokens: int | None, top_p: float | None, extra_body: str | None,
-    meta_model: str | None, tir_k: int, grade_k: int, exec_timeout: float,
+    ledger_id: str, claim_id: str, tir_k: int, grade_k: int, exec_timeout: float, **endpoint,
 ) -> None:
     """Re-check one claim (e.g. at higher --grade-k); badges refresh on next render."""
-    led, claim, p = _resolve_ledger_claim(
-        ledger_id, claim_id, profile=profile, model=model, base_url=base_url,
-        api_key=api_key, temperature=temperature, max_tokens=max_tokens, top_p=top_p,
-        extra_body=extra_body, meta_model=meta_model,
-    )
+    led, claim, p = _resolve_ledger_claim(ledger_id, claim_id, **endpoint)
     job_id = ledger.attach_check(
         led, claim, provider=p, round_=led["rounds_used"], kind="recheck",
         tir_k=tir_k, grade_k=grade_k, exec_timeout_s=exec_timeout,
@@ -729,18 +664,11 @@ def recheck_cmd(
 @endpoint_options
 @check_options
 def challenge_cmd(
-    ledger_id: str, claim_id: str, objection: str, profile: str | None,
-    model: str | None, base_url: str | None, api_key: str | None,
-    temperature: float | None, max_tokens: int | None, top_p: float | None,
-    extra_body: str | None, meta_model: str | None, tir_k: int, grade_k: int,
-    exec_timeout: float,
+    ledger_id: str, claim_id: str, objection: str, tir_k: int, grade_k: int,
+    exec_timeout: float, **endpoint,
 ) -> None:
     """Re-check one claim with a specific objection put to the checkers."""
-    led, claim, p = _resolve_ledger_claim(
-        ledger_id, claim_id, profile=profile, model=model, base_url=base_url,
-        api_key=api_key, temperature=temperature, max_tokens=max_tokens, top_p=top_p,
-        extra_body=extra_body, meta_model=meta_model,
-    )
+    led, claim, p = _resolve_ledger_claim(ledger_id, claim_id, **endpoint)
     job_id = ledger.attach_check(
         led, claim, provider=p, round_=led["rounds_used"], kind="challenge",
         text_override=challenge_text(claim, objection),
@@ -756,17 +684,10 @@ def challenge_cmd(
 @endpoint_options
 @check_options
 def expand_cmd(
-    ledger_id: str, claim_id: str, profile: str | None, model: str | None,
-    base_url: str | None, api_key: str | None, temperature: float | None,
-    max_tokens: int | None, top_p: float | None, extra_body: str | None,
-    meta_model: str | None, tir_k: int, grade_k: int, exec_timeout: float,
+    ledger_id: str, claim_id: str, tir_k: int, grade_k: int, exec_timeout: float, **endpoint,
 ) -> None:
     """Decompose one claim into sub-claims and check each of them."""
-    led, claim, p = _resolve_ledger_claim(
-        ledger_id, claim_id, profile=profile, model=model, base_url=base_url,
-        api_key=api_key, temperature=temperature, max_tokens=max_tokens, top_p=top_p,
-        extra_body=extra_body, meta_model=meta_model,
-    )
+    led, claim, p = _resolve_ledger_claim(ledger_id, claim_id, **endpoint)
     try:
         children = asyncio.run(
             expand_claim(
@@ -785,7 +706,7 @@ def expand_cmd(
 
 @cli.command(name="mcp-serve")
 def mcp_serve_cmd() -> None:
-    """Run the MCP server (stdio): submit_solve / check_solve over the job store."""
+    """Run the MCP server (stdio): submit/poll/ledger tools over the shared stores."""
     from mathx.mcp_server import serve
 
     serve()
@@ -848,15 +769,17 @@ def _read_pyproject(path: Path) -> tuple[str, bool]:
 def _project_imports_mathx(root: Path) -> bool:
     """Best-effort: does any .py under `root` import mathx (a library use)?"""
     try:
-        for py in root.rglob("*.py"):
-            if _SKIP_DIRS & set(py.parts):
-                continue
-            try:
-                text = py.read_text(errors="ignore")
-            except OSError:
-                continue
-            if "import mathx" in text or "from mathx" in text:
-                return True
+        for dirpath, dirs, files in os.walk(root):
+            dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]  # prune BEFORE descending
+            for name in files:
+                if not name.endswith(".py"):
+                    continue
+                try:
+                    text = (Path(dirpath) / name).read_text(errors="ignore")
+                except OSError:
+                    continue
+                if "import mathx" in text or "from mathx" in text:
+                    return True
     except OSError:
         return False
     return False

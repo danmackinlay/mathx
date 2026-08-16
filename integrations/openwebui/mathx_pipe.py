@@ -25,8 +25,9 @@ import asyncio
 from pydantic import BaseModel, Field
 
 from mathx import config, ledger
+from mathx.argue import ARGUE_GRADE_K as ARGUE_CLAIM_GRADE_K
 from mathx.argue import argue
-from mathx.check import check, check_result_to_dict
+from mathx.check import DEFAULT_GRADE_K, DEFAULT_TIR_K, check, check_result_to_dict
 from mathx.engine import result_to_dict, solve
 from mathx.report import render_check_report, render_ledger, render_report
 
@@ -52,11 +53,11 @@ class Pipe:
         )
         SOLVE_K: int = Field(default=16, description="samples for solve votes")
         SOLVE_MAX_K: int = Field(default=0, description="auto-escalation cap (0 = off)")
-        CHECK_GRADE_K: int = Field(default=8, description="TRUE/FALSE graders per check")
-        CHECK_TIR_K: int = Field(default=1, description="checker scripts per check")
+        CHECK_GRADE_K: int = Field(default=DEFAULT_GRADE_K, description="TRUE/FALSE graders per check")
+        CHECK_TIR_K: int = Field(default=DEFAULT_TIR_K, description="checker scripts per check")
         ARGUE_ROUNDS: int = Field(default=2, description="max refine cycles")
-        ARGUE_GRADE_K: int = Field(default=4, description="graders per argue claim")
-        ARGUE_TIR_K: int = Field(default=1, description="scripts per argue claim")
+        ARGUE_GRADE_K: int = Field(default=ARGUE_CLAIM_GRADE_K, description="graders per argue claim")
+        ARGUE_TIR_K: int = Field(default=DEFAULT_TIR_K, description="scripts per argue claim")
 
     def __init__(self):
         self.valves = self.Valves()

@@ -109,6 +109,21 @@ class TestParseScriptVerdict:
             "script timed out",
         )
 
+    def test_distant_note_not_attached(self):
+        # a chatty script printed a counterexample for a sub-case pages earlier;
+        # only a note IMMEDIATELY before the verdict may attach (checker prompt)
+        out = "COUNTEREXAMPLE: x=2\nsub-case 2 ok\nsub-case 3 ok\nVERDICT: PASS\n"
+        assert parse_script_verdict(exec_result(out)) == ("pass", None)
+
+    def test_note_on_line_directly_above_attaches(self):
+        out = "checking...\nCOUNTEREXAMPLE: x=2\nVERDICT: FAIL\n"
+        assert parse_script_verdict(exec_result(out)) == ("fail", "x=2")
+
+    def test_blank_line_between_note_and_verdict_still_attaches(self):
+        # adjacency means "first NON-BLANK line above" — blank padding is tolerated
+        out = "REASON: sympy could not decide\n\nVERDICT: INCONCLUSIVE\n"
+        assert parse_script_verdict(exec_result(out)) == ("inconclusive", "sympy could not decide")
+
 
 class TestCheck:
     def test_supported_when_lanes_agree(self, fake_endpoint):
@@ -170,6 +185,26 @@ class TestCheck:
         assert d["grade"]["errors"] == 1
         assert d["grade"]["abstain"] == 1
         assert r.grade_margin == "1/1"
+
+    def test_grade_counts_tallied_once_and_serialized(self, fake_endpoint):
+        fake_endpoint(by_system={
+            GRADER_SYSTEM: cycler(
+                [r"\boxed{TRUE}", r"\boxed{TRUE}", r"\boxed{FALSE}", r"\boxed{UNDECIDED}"]
+            ),
+        })
+        r = run_check(tir_k=0, grade_k=4)
+        assert r.grade_counts == {"true": 2, "false": 1, "abstain": 1, "errors": 0}
+        d = check_result_to_dict(r)
+        assert d["grade_counts"] == r.grade_counts
+        # the grade sub-dict reads the same single tally, so it must agree
+        assert {k: d["grade"][k] for k in ("true", "false", "abstain", "errors")} == r.grade_counts
+
+    def test_grade_counts_none_when_lane_off(self, fake_endpoint):
+        fake_endpoint(by_system={CHECKER_SYSTEM: PASS_SCRIPT})
+        r = run_check(tir_k=1, grade_k=0, executor=FakeExecutor())
+        assert r.grade_counts is None
+        d = check_result_to_dict(r)
+        assert d["grade_counts"] is None and d["grade"] is None
 
     def test_grade_split_is_unclear(self, fake_endpoint):
         fake_endpoint(by_system={

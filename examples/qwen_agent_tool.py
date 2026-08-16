@@ -22,7 +22,7 @@ tool by name when constructing the agent::
 Synchronous note: ``call()`` blocks for the duration of the fan-out (minutes for
 ``--k 16``). Qwen-Agent's tool dispatch is itself synchronous, so this matches
 the framework. If you need non-blocking dispatch, wire mathx via MCP instead
-(see MCP_PLAN.md in the mathx repo).
+(see DESIGN_NOTES.md#mcp-server in the mathx repo).
 """
 from __future__ import annotations
 

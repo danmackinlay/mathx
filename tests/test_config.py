@@ -164,7 +164,7 @@ class TestProfileCli:
         assert result.exit_code != 0
         assert "MY_ROUTER_KEY" in result.output
         monkeypatch.setenv("MY_ROUTER_KEY", "sk-router")
-        ep = fake_endpoint([r"\boxed{4}"])
+        fake_endpoint([r"\boxed{4}"])
         result = self.invoke("solve", "2+2?", "--profile", "cloud", "--strategy", "cot", "--no-progress")
         assert result.exit_code == 0, result.output
 

@@ -96,6 +96,7 @@ class TestSolve:
         assert result.exit_code == 0, result.output
         assert "answer: 42" in result.output
         assert "margin: 2/3" in result.output
+        assert "votes (weight, answer):" in result.output  # stdout is render_report
         run = json.loads(out.read_text())
         assert run["problem"] == "6*7?"
         assert run["answer"] == "42"
@@ -152,7 +153,7 @@ class TestSubmit:
         job_id = result.stdout.strip()
         assert no_spawn == [(job_id, {"api_key": "test-key"})]
         record = jobs.read(job_id)
-        assert record["status"] == "running"
+        assert record["status"] == "queued"  # honest until the worker stamps itself
         assert record["kind"] == "solve"
         assert record["args"]["problem"] == "6*7?"
         assert record["args"]["k"] == 4
@@ -178,9 +179,16 @@ class TestCheck:
         result = invoke("check", "2+2=4", *PROVIDER_ARGS, "--grade-k", "2", "--out", str(out))
         assert result.exit_code == 0, result.output
         assert "status: supported" in result.output
-        assert "tir[0]: pass" in result.output
+        assert "tir scripts" in result.output  # stdout is render_check_report
         assert "grade: true 2/2" in result.output
+        assert "execution: 1 script" in result.output
         assert json.loads(out.read_text())["kind"] == "check"
+
+    def test_progress_streams_to_stderr(self, fake_endpoint):
+        fake_endpoint(by_system={CHECKER_SYSTEM: PASS_SCRIPT, GRADER_SYSTEM: r"\boxed{TRUE}"})
+        result = invoke("check", "2+2=4", *PROVIDER_ARGS, "--grade-k", "1", "--progress")
+        assert result.exit_code == 0, result.output
+        assert "[1/1] script pass" in result.stderr
 
     def test_refuted_exits_1(self, fake_endpoint):
         fake_endpoint(by_system={CHECKER_SYSTEM: FAIL_SCRIPT, GRADER_SYSTEM: r"\boxed{FALSE}"})
@@ -204,8 +212,18 @@ class TestCheck:
 
 
 class TestStatus:
+    def test_queued_exits_2(self):
+        record = submit_job()
+        result = invoke("status", record["job_id"])
+        assert result.exit_code == 2
+        assert "queued" in result.output
+        assert "elapsed:" in result.output
+        assert "6*7?" in result.output
+        assert "DEAD" not in result.output  # no pid yet — no orphan warning possible
+
     def test_running_exits_2(self):
         record = submit_job()
+        jobs.stamp_worker(record["job_id"])  # this test process stands in for the worker
         result = invoke("status", record["job_id"])
         assert result.exit_code == 2
         assert "running" in result.output
@@ -232,7 +250,7 @@ class TestStatus:
         assert result.exit_code == 2
         parsed = json.loads(result.stdout)
         assert parsed["job_id"] == record["job_id"]
-        assert parsed["status"] == "running"
+        assert parsed["status"] == "queued"
 
     def test_unknown_id(self):
         result = invoke("status", "20990101T000000Z-dead")
@@ -259,7 +277,7 @@ class TestJobs:
     def test_json_flag(self):
         submit_job()
         parsed = json.loads(invoke("jobs", "--json").stdout)
-        assert len(parsed) == 1 and parsed[0]["status"] == "running"
+        assert len(parsed) == 1 and parsed[0]["status"] == "queued"
 
     def test_prune(self):
         record = submit_job()
@@ -316,11 +334,11 @@ class TestShow:
         sample = invoke("show", record["job_id"], "--sample", "0")
         assert "the reasoning" in sample.output
 
-    def test_running_job_id_is_a_polite_error(self):
-        record = submit_job()
+    def test_unfinished_job_id_is_a_polite_error(self):
+        record = submit_job()  # queued; a stamped-running record takes the same path
         result = invoke("show", record["job_id"])
         assert result.exit_code != 0
-        assert "still running" in result.output
+        assert "not finished" in result.output
         assert f"mathx status {record['job_id']}" in result.output
 
     def test_errored_job_id_shows_error(self):
@@ -498,7 +516,7 @@ class TestArgueRecords:
         from mathx import ledger
 
         led = ledger.create("why?", model="m", base_url="http://b/v1", rounds_max=1)
-        claim = ledger.add_claim(led, "Claim alpha.", round_added=0)
+        ledger.add_claim(led, "Claim alpha.", round_added=0)
         ledger.save(led)
         record = jobs.submit(
             kind="argue", args={"problem": "why?", "ledger_id": led["ledger_id"], "model": "m", "base_url": "http://b/v1"}

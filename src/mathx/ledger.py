@@ -1,7 +1,8 @@
 """Claim-ledger store: the persistent artifact of the decompose–check–refine loop.
 
 One JSON file per ledger under ``$MATHX_LEDGERS_DIR``, else a ``ledgers/`` dir
-beside the job store (see LOOP_PLAN.md for the record shape). The ledger is
+beside the job store (record shape: DESIGN_NOTES.md#decompose-check-refine-loop-mathx-argue).
+The ledger is
 deliberately a FILE — ROADMAP invariant 3 — so a loop started in one home
 (host agent / ``mathx argue`` / library) can be inspected, challenged, and
 resumed from another. Claim state is never cached here: it is derived live from
@@ -12,12 +13,11 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import replace
-from datetime import datetime, timezone
 from pathlib import Path
 
 from mathx import jobs
+from mathx._store import guarded_path, list_records, new_id, now_iso, write_atomic
 from mathx.config import ProviderConfig
-from mathx.jobs import _write_atomic, new_job_id  # same id + atomic-write conventions
 
 
 def ledgers_dir() -> Path:
@@ -27,19 +27,13 @@ def ledgers_dir() -> Path:
 
 
 def _path(ledger_id: str) -> Path:
-    if "/" in ledger_id or os.sep in ledger_id or ".." in ledger_id:
-        raise KeyError(f"invalid ledger id: {ledger_id!r}")
-    return ledgers_dir() / f"{ledger_id}.json"
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return guarded_path(ledgers_dir(), ledger_id, label="ledger")
 
 
 def create(problem: str, *, model: str, base_url: str, rounds_max: int) -> dict:
-    ledger_id = new_job_id()
+    ledger_id = new_id()
     while _path(ledger_id).exists():
-        ledger_id = new_job_id()
+        ledger_id = new_id()
     led = {
         "ledger_id": ledger_id,
         "kind": "ledger",
@@ -50,8 +44,8 @@ def create(problem: str, *, model: str, base_url: str, rounds_max: int) -> dict:
         "rounds_max": rounds_max,
         "model": model,
         "base_url": base_url,
-        "created_at": _now(),
-        "updated_at": _now(),
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
         "claims": [],
         "scratchpad": [],
     }
@@ -60,8 +54,8 @@ def create(problem: str, *, model: str, base_url: str, rounds_max: int) -> dict:
 
 
 def save(led: dict) -> None:
-    led["updated_at"] = _now()
-    _write_atomic(_path(led["ledger_id"]), led)
+    led["updated_at"] = now_iso()
+    write_atomic(_path(led["ledger_id"]), led)
 
 
 def read(ledger_id: str) -> dict:
@@ -72,15 +66,7 @@ def read(ledger_id: str) -> dict:
 
 
 def list_ledgers() -> list[dict]:
-    records = []
-    if ledgers_dir().is_dir():
-        for path in ledgers_dir().glob("*.json"):
-            try:
-                led = json.loads(path.read_text())
-            except (OSError, json.JSONDecodeError):
-                continue
-            if isinstance(led, dict) and "ledger_id" in led:
-                records.append(led)
+    records = list_records(ledgers_dir(), "ledger_id")
     records.sort(key=lambda r: r.get("updated_at", ""), reverse=True)
     return records
 
@@ -167,7 +153,9 @@ def claim_state(claim: dict) -> tuple[str, str]:
         record = jobs.read(job_id)
     except KeyError:
         return "missing", f"job {job_id} not in store"
-    if record.get("status") == "running":
+    if record.get("status") in ("queued", "running"):
+        # queued (worker not yet stamped) is as in-flight as running — falling through
+        # to result-parsing would misread a queued job as an error
         return "checking", ""  # the verdict reference already names the job
     if record.get("status") == "error":
         return "error", record.get("error") or ""

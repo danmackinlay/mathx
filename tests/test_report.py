@@ -51,7 +51,7 @@ class TestRenderReport:
     def test_vote_histogram_marks_winner_and_sorts(self):
         out = render_report(make_run())
         lines = out.splitlines()
-        vote_lines = [l for l in lines if "█" in l]
+        vote_lines = [line for line in lines if "█" in line]
         assert len(vote_lines) == 3
         assert "42" in vote_lines[0] and "← winner" in vote_lines[0]
         assert "← winner" not in vote_lines[1]
@@ -79,6 +79,13 @@ class TestRenderReport:
     def test_escalations_shown_when_nonzero(self):
         assert "escalations: 2" in render_report(make_run(escalations=2))
         assert "escalations" not in render_report(make_run())
+
+    def test_judge_failures_shown_when_nonzero(self):
+        out = render_report(make_run(judge_failures=3))
+        assert "judge failures: 3" in out
+        assert "degraded toward maj@k" in out
+        assert "judge failures" not in render_report(make_run())
+        assert "judge failures" not in render_report(make_run(judge_failures=0))
 
     def test_non_voters_counted(self):
         run = make_run(

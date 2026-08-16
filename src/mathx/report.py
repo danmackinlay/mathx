@@ -1,7 +1,8 @@
-"""Render a solve run's JSON audit record for humans.
+"""Render a run's JSON audit record for humans: solve, check, and ledger records.
 
-Pure readers over the dict shape written by ``mathx solve --out`` (see
-``result_to_dict``): vote histogram, per-sample table, disagreement surfacing.
+Pure readers over the dict shapes written by ``mathx solve --out`` / ``mathx check``
+/ the ledger store: vote histogram, per-sample table, disagreement surfacing,
+verdict evidence, claim trees.
 Nothing here talks to a network; equivalence checks against the winner reuse
 the same math-verify primitive the engine votes with.
 """
@@ -9,18 +10,16 @@ from __future__ import annotations
 
 from math_verify import verify
 
-from mathx.check import SLOW_FRACTION
 from mathx.engine import parse_answer
+from mathx.executor import SLOW_FRACTION, is_slow
 
 BAR_WIDTH = 24
 
 
 def _script_is_slow(r: dict, timeout_s: float | None) -> bool:
-    """Dict-shape mirror of ``check.is_slow``: a completed script that ate
-    ≥ SLOW_FRACTION of its wall-clock budget."""
-    if not timeout_s or r.get("timed_out"):
-        return False
-    return r.get("exec_elapsed_ms", 0) >= SLOW_FRACTION * timeout_s * 1000
+    """Dict-shape adapter over ``executor.is_slow`` — the near-leaf module that
+    owns the budget, so this stays a pure reader (no engine import for it)."""
+    return is_slow(r.get("exec_elapsed_ms", 0), timed_out=bool(r.get("timed_out")), timeout_s=timeout_s)
 
 
 def _equiv(a: str, b: str) -> bool:
@@ -62,6 +61,11 @@ def render_report(run: dict) -> str:
         meta += f"   escalations: {run['escalations']}"
     if run.get("judge_merges"):
         meta += f"   judge merges: {run['judge_merges']} (LLM-judged equivalence, weaker than CAS)"
+    if run.get("judge_failures"):
+        meta += (
+            f"   judge failures: {run['judge_failures']} "
+            "(judge unparseable; weight defaulted — degraded toward maj@k)"
+        )
     lines.append(meta)
     lines.append(
         f"tokens: in={run.get('tokens_in_total', 0)} out={run.get('tokens_out_total', 0)}   "

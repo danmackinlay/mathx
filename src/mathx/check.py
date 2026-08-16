@@ -1,4 +1,4 @@
-"""Claim checking: the Stage-3 primitive (design: CHECK_PLAN.md).
+"""Claim checking: the Stage-3 primitive (design: DESIGN_NOTES.md#claim-checker-mathx-check).
 
 Two verdict lanes, run concurrently, each optional:
 
@@ -21,11 +21,22 @@ import asyncio
 import re
 import time
 from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import dataclass
 
 from mathx.config import ProviderConfig
 from mathx.engine import Sample, concurrency_cap, make_client, one_sample, sample_to_dict
-from mathx.executor import ExecResult, LocalExecutor, get_executor
+# SLOW_FRACTION lives in executor.py (the module that owns the execution
+# budget); re-exported here so existing importers keep working.
+from mathx.executor import SLOW_FRACTION, ExecResult, Executor, get_executor  # noqa: F401
+from mathx.executor import is_slow as _is_slow_scalar
+
+# Knob defaults, declared ONCE: every surface (CLI options, MCP tool signatures,
+# worker .get() fallbacks, Open WebUI valves) references these instead of
+# repeating literals that then drift.
+DEFAULT_TIR_K = 1
+DEFAULT_GRADE_K = 8
+DEFAULT_EXEC_TIMEOUT_S = 60.0
 
 CHECKER_SYSTEM = (
     "You are a careful mathematician writing a VERIFICATION SCRIPT for a claim — "
@@ -53,11 +64,6 @@ GRADER_SYSTEM = (
     "\\boxed{FALSE}. If the claim is ambiguous or you cannot decide, end with "
     "\\boxed{UNDECIDED}."
 )
-
-# A script whose execution eats this fraction of its wall-clock budget is
-# flagged "slow" — an early warning for NP-hard / near-non-terminating checkers,
-# short of an outright timeout.
-SLOW_FRACTION = 0.8
 
 CODE_BLOCK = re.compile(r"```(?:python|py)?\s*\n(.*?)```", re.DOTALL)
 VERDICT_LINE = re.compile(r"\s*VERDICT:\s*(PASS|FAIL|INCONCLUSIVE)\s*$", re.IGNORECASE)
@@ -93,6 +99,9 @@ class CheckResult:
     tir_k: int
     grade_k: int
     meta_model: str | None = None  # authored the checker scripts, when != model
+    # {"true": n, "false": n, "abstain": n, "errors": n}; None when the grade
+    # lane is off. Tallied ONCE in check() — serialization reads, not re-counts.
+    grade_counts: dict | None = None
     tokens_in_total: int = 0
     tokens_out_total: int = 0
     elapsed_ms_total: int = 0
@@ -106,22 +115,29 @@ def extract_code(text: str | None) -> str | None:
 
 
 def parse_script_verdict(res: ExecResult) -> tuple[str, str | None]:
-    """(verdict, note) from a checker script's execution."""
+    """(verdict, note) from a checker script's execution.
+
+    A NOTE (COUNTEREXAMPLE:/REASON:) attaches only if it's the first non-blank
+    line above the verdict — the prompt says "immediately before", and a chatty
+    script that prints a counterexample for some sub-case pages earlier must not
+    have it glued onto a later PASS."""
     if res.timed_out:
         return "error", "script timed out"
     lines = res.stdout.splitlines()
-    for line in reversed(lines):
-        m = VERDICT_LINE.match(line)
+    for i in range(len(lines) - 1, -1, -1):
+        m = VERDICT_LINE.match(lines[i])
         if m is None:
             continue
         if res.exit_code != 0:
             return "error", f"script printed a VERDICT but exited {res.exit_code}"
         note = None
-        for candidate in reversed(lines):
+        for candidate in reversed(lines[:i]):
+            if not candidate.strip():
+                continue  # blank padding between note and verdict is tolerated
             m2 = NOTE_LINE.match(candidate)
             if m2:
                 note = m2.group(1).strip()
-                break
+            break  # only the first non-blank line above the verdict counts
         return m.group(1).lower(), note
     if res.exit_code != 0:
         stderr_tail = res.stderr.strip().splitlines()[-1] if res.stderr.strip() else "no stderr"
@@ -170,7 +186,7 @@ def _tally_grades(samples: list[Sample]) -> tuple[str, str, int, int, int, int]:
 
 def is_slow(run: ScriptRun, exec_timeout_s: float) -> bool:
     """A completed script that ate ≥ SLOW_FRACTION of its budget (not timed out)."""
-    return not run.timed_out and run.exec_elapsed_ms >= SLOW_FRACTION * exec_timeout_s * 1000
+    return _is_slow_scalar(run.exec_elapsed_ms, timed_out=run.timed_out, timeout_s=exec_timeout_s)
 
 
 def _exec_summary(runs: list[ScriptRun], exec_timeout_s: float) -> dict:
@@ -236,10 +252,10 @@ async def check(
     claim: str,
     *,
     provider: ProviderConfig,
-    tir_k: int = 1,
-    grade_k: int = 8,
-    exec_timeout_s: float = 60.0,
-    executor: LocalExecutor | None = None,
+    tir_k: int = DEFAULT_TIR_K,
+    grade_k: int = DEFAULT_GRADE_K,
+    exec_timeout_s: float = DEFAULT_EXEC_TIMEOUT_S,
+    executor: Executor | None = None,
     on_script: Callable[[ScriptRun, int, int], None] | None = None,
 ) -> CheckResult:
     """Run the enabled verdict lanes concurrently and aggregate.
@@ -265,32 +281,33 @@ async def check(
     sem = asyncio.Semaphore(cap) if cap else None
 
     async def sample(use_model: str, system: str) -> Sample:
-        if sem is not None:
-            async with sem:
-                return await one_sample(
-                    client, use_model, prompt, temperature=temp,
-                    max_tokens=provider.max_tokens, system=system,
-                    top_p=provider.top_p, extra_body=provider.extra_body,
-                )
-        return await one_sample(
-            client, use_model, prompt, temperature=temp,
-            max_tokens=provider.max_tokens, system=system,
-            top_p=provider.top_p, extra_body=provider.extra_body,
-        )
+        async with sem if sem is not None else nullcontext():
+            return await one_sample(
+                client, use_model, prompt, temperature=temp,
+                max_tokens=provider.max_tokens, system=system,
+                top_p=provider.top_p, extra_body=provider.extra_body,
+            )
 
     tir_done = 0  # asyncio is single-threaded — no lock needed for the counter
 
     async def _one_tir() -> ScriptRun:
         gen = await sample(meta_model or model, CHECKER_SYSTEM)
         if gen.error is not None:
-            return ScriptRun("error", f"generation failed: {gen.error}", None, "", "", None, False, 0, gen)
+            return ScriptRun(
+                verdict="error", note=f"generation failed: {gen.error}", code=None,
+                stdout="", stderr="", exit_code=None, timed_out=False, exec_elapsed_ms=0, gen=gen,
+            )
         code = extract_code(gen.text)
         if code is None:
-            return ScriptRun("error", "generation contained no ```python block", None, "", "", None, False, 0, gen)
+            return ScriptRun(
+                verdict="error", note="generation contained no ```python block", code=None,
+                stdout="", stderr="", exit_code=None, timed_out=False, exec_elapsed_ms=0, gen=gen,
+            )
         res = await asyncio.to_thread(executor.run, code, timeout_s=exec_timeout_s)
         verdict, note = parse_script_verdict(res)
         return ScriptRun(
-            verdict, note, code, res.stdout, res.stderr, res.exit_code, res.timed_out, res.elapsed_ms, gen
+            verdict=verdict, note=note, code=code, stdout=res.stdout, stderr=res.stderr,
+            exit_code=res.exit_code, timed_out=res.timed_out, exec_elapsed_ms=res.elapsed_ms, gen=gen,
         )
 
     async def one_tir() -> ScriptRun:
@@ -312,9 +329,10 @@ async def check(
 
     tir_agg = _aggregate_tir(tir_runs)
     if grade_samples:
-        grade_verdict, grade_margin, *_rest = _tally_grades(grade_samples)
+        grade_verdict, grade_margin, n_true, n_false, abstain, errors = _tally_grades(grade_samples)
+        grade_counts = {"true": n_true, "false": n_false, "abstain": abstain, "errors": errors}
     else:
-        grade_verdict = grade_margin = None
+        grade_verdict = grade_margin = grade_counts = None
     status = _overall_status(tir_agg, grade_verdict)
 
     all_samples = [r.gen for r in tir_runs] + grade_samples
@@ -326,6 +344,7 @@ async def check(
         grade_samples=grade_samples,
         grade_verdict=grade_verdict,
         grade_margin=grade_margin,
+        grade_counts=grade_counts,
         model=model,
         base_url=provider.base_url,
         tir_k=max(0, tir_k),
@@ -340,9 +359,7 @@ async def check(
 
 def check_result_to_dict(r: CheckResult) -> dict:
     """JSON-friendly serialization; code/stdout/reasoning kept as audit trail."""
-    n_true, n_false, abstain, errors = 0, 0, 0, 0
-    if r.grade_samples:
-        _, _, n_true, n_false, abstain, errors = _tally_grades(r.grade_samples)
+    counts = r.grade_counts or {}
     return {
         "kind": "check",
         "claim": r.claim,
@@ -358,6 +375,7 @@ def check_result_to_dict(r: CheckResult) -> dict:
         "elapsed_ms_total": r.elapsed_ms_total,
         "exec_timeout_s": r.exec_timeout_s,
         "exec": _exec_summary(r.tir_runs, r.exec_timeout_s),
+        "grade_counts": r.grade_counts,
         "tir": [
             {
                 "verdict": run.verdict,
@@ -377,10 +395,10 @@ def check_result_to_dict(r: CheckResult) -> dict:
         else {
             "verdict": r.grade_verdict,
             "margin": r.grade_margin,
-            "true": n_true,
-            "false": n_false,
-            "abstain": abstain,
-            "errors": errors,
+            "true": counts.get("true", 0),
+            "false": counts.get("false", 0),
+            "abstain": counts.get("abstain", 0),
+            "errors": counts.get("errors", 0),
             "samples": [sample_to_dict(s) for s in r.grade_samples],
         },
     }

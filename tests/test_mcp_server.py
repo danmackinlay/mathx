@@ -17,6 +17,7 @@ TOOLS = {
     "list_ledgers",
     "recheck_claim",
     "challenge_claim",
+    "expand_claim",
 }
 
 
@@ -42,7 +43,7 @@ class TestTools:
 
     def test_submit_solve_returns_handle_and_spawns(self, no_spawn, provider_env):
         out = mcp_server.submit_solve("1+1?", k=4)
-        assert out["status"] == "running"
+        assert out["status"] == "queued"  # honest until the worker stamps itself
         assert no_spawn == [out["job_id"]]
         record = jobs.read(out["job_id"])
         assert record["kind"] == "solve"
@@ -65,7 +66,7 @@ class TestTools:
         monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("MATHX_API_KEY", "k")
         out = mcp_server.submit_solve("1+1?", profile="p")
-        assert out["status"] == "running"
+        assert out["status"] == "queued"
         assert jobs.read(out["job_id"])["args"]["provider"]["model"] == "prof-model"
 
     def test_submit_check(self, no_spawn, provider_env):
@@ -76,11 +77,11 @@ class TestTools:
         assert record["args"]["grade_k"] == 6
         assert no_spawn == [out["job_id"]]
 
-    def test_poll_job_running_then_complete(self, no_spawn, provider_env, fake_endpoint):
+    def test_poll_job_queued_then_complete(self, no_spawn, provider_env, fake_endpoint):
         fake_endpoint([r"\boxed{2}"] * 2)
         out = mcp_server.submit_solve("1+1?", k=2)
         polled = mcp_server.poll_job(out["job_id"])
-        assert polled["status"] == "running"
+        assert polled["status"] == "queued"  # spawn captured — no worker has stamped yet
         assert polled["elapsed_ms"] >= 0
         asyncio.run(worker.run_job(out["job_id"]))  # stand in for the worker
         polled = mcp_server.poll_job(out["job_id"])
@@ -106,7 +107,7 @@ class TestTools:
 class TestArgueAndLedgerTools:
     def test_submit_argue_returns_ledger_immediately(self, no_spawn, provider_env):
         out = mcp_server.submit_argue("why?", rounds=1)
-        assert out["status"] == "running"
+        assert out["status"] == "queued"
         assert out["ledger_id"]
         led = ledger.read(out["ledger_id"])
         assert led["claims"] == []  # pre-created, loop not yet run
@@ -171,3 +172,28 @@ class TestArgueAndLedgerTools:
         out = mcp_server.recheck_claim(led["ledger_id"], "c9")
         assert out["status"] == "error"
         assert "no claim 'c9'" in out["error"]
+
+    def test_expand_claim_adds_checked_children(self, no_spawn, provider_env, fake_endpoint):
+        from mathx.argue import DECOMPOSER_SYSTEM
+
+        fake_endpoint(by_system={
+            DECOMPOSER_SYSTEM: "ARGUMENT:\nx\nCLAIMS:\n1. Sub one.\n2. Sub two.\n"
+        })
+        led = ledger.create("p", model="test-model", base_url="http://fake.test/v1", rounds_max=1)
+        claim = ledger.add_claim(led, "Claim alpha.", round_added=0)
+        ledger.save(led)
+        out = asyncio.run(mcp_server.expand_claim(led["ledger_id"], claim["id"]))
+        assert out["status"] == "checking"
+        assert out["ledger_id"] == led["ledger_id"] and out["claim_id"] == claim["id"]
+        assert [c["text"] for c in out["children"]] == ["Sub one.", "Sub two."]
+        assert len(no_spawn) == 2  # each sub-claim got its own check job
+        persisted = ledger.read(led["ledger_id"])
+        children = [c for c in persisted["claims"] if c["parent"] == claim["id"]]
+        assert [c["id"] for c in children] == [c["id"] for c in out["children"]]
+
+    def test_expand_unknown_claim(self, no_spawn, provider_env):
+        led = ledger.create("p", model="m", base_url="http://b/v1", rounds_max=1)
+        out = asyncio.run(mcp_server.expand_claim(led["ledger_id"], "c9"))
+        assert out["status"] == "error"
+        assert "no claim 'c9'" in out["error"]
+        assert not no_spawn
